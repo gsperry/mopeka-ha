@@ -1,197 +1,170 @@
-"""Tests for Mopeka integration initialization."""
-from unittest.mock import patch
-from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from custom_components.mopeka_ha import DOMAIN, CONF_INTERVAL
+"""Tests for Mopeka HA setup, unload, and the update coordinator."""
 
-async def test_setup_and_unload_entry(hass):
-    """Test setting up and unloading the integration."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="test@example.com",
-        data={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-password"},
-        options={"sensors": ["battery"]}
+from __future__ import annotations
+
+from datetime import timedelta
+from typing import Any
+
+import pytest
+from freezegun.api import FrozenDateTimeFactory
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
+
+from custom_components.mopeka_ha import async_remove_config_entry_device
+from custom_components.mopeka_ha.const import (
+    CONF_EXCLUDED_DEVICES,
+    CONF_SENSORS,
+    CONF_UPDATE_INTERVAL,
+    DOMAIN,
+)
+from custom_components.mopeka_ha.coordinator import update_interval_minutes
+
+from .conftest import ADDRESS_A, ADDRESS_B, EMAIL
+from .fake_cloud import FakeCloud
+
+
+async def _setup(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+async def test_setup_and_unload(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """The entry loads, reads both tanks, and unloads."""
+    await _setup(hass, config_entry)
+    assert config_entry.state is ConfigEntryState.LOADED
+    assert set(config_entry.runtime_data.data.tanks) == {ADDRESS_A, ADDRESS_B}
+
+    assert await hass.config_entries.async_unload(config_entry.entry_id)
+    assert config_entry.state is ConfigEntryState.NOT_LOADED
+
+
+async def test_setup_auth_failure_starts_reauth(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """A rejected password at startup asks the user to sign in again."""
+    fake_cloud.cognito.users[EMAIL].password = "changed"
+    await _setup(hass, config_entry)
+
+    assert config_entry.state is ConfigEntryState.SETUP_ERROR
+    flows = hass.config_entries.flow.async_progress()
+    assert [f["context"]["source"] for f in flows] == [SOURCE_REAUTH]
+
+
+async def test_setup_connection_failure_retries(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """A cloud outage at startup retries setup later."""
+    fake_cloud.cognito.queue_error("InternalErrorException", "", 500)
+    await _setup(hass, config_entry)
+    assert config_entry.state is ConfigEntryState.SETUP_RETRY
+
+
+async def test_poll_reuses_token_and_survives_outage(
+    hass: HomeAssistant,
+    fake_cloud: FakeCloud,
+    config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Scheduled polls reuse the token; an outage marks entities unavailable."""
+    await _setup(hass, config_entry)
+    coordinator = config_entry.runtime_data
+
+    fake_cloud.gateway.queued_exceptions.append(TimeoutError())
+    freezer.tick(timedelta(minutes=5, seconds=1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert coordinator.last_update_success is False
+    assert hass.states.get("sensor.tank_a_fill_percent").state == "unavailable"
+
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator.last_update_success is True
+    assert hass.states.get("sensor.tank_a_fill_percent").state == "50.0"
+    assert fake_cloud.cognito.count("InitiateAuth", "USER_SRP_AUTH") == 1
+
+
+async def test_poll_auth_failure_starts_reauth(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """If the password stops working while running, re-authentication starts."""
+    await _setup(hass, config_entry)
+    fake_cloud.cognito.users[EMAIL].password = "changed"
+    fake_cloud.cognito.expire_all_tokens()
+    fake_cloud.cognito.revoke_refresh_tokens()
+
+    await config_entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+
+    flows = hass.config_entries.flow.async_progress()
+    assert [f["context"]["source"] for f in flows] == [SOURCE_REAUTH]
+
+
+@pytest.mark.parametrize(
+    ("options", "minutes"),
+    [
+        ({}, 5),
+        ({CONF_UPDATE_INTERVAL: 1}, 1),
+        ({CONF_UPDATE_INTERVAL: 0}, 1),
+        ({CONF_UPDATE_INTERVAL: 1000}, 60),
+        ({CONF_UPDATE_INTERVAL: "15"}, 15),
+        ({CONF_UPDATE_INTERVAL: "often"}, 5),
+        ({CONF_UPDATE_INTERVAL: None}, 5),
+    ],
+)
+def test_update_interval(options: dict[str, Any], minutes: int) -> None:
+    """The interval option is clamped and defaults sensibly."""
+    assert update_interval_minutes(options) == minutes
+
+
+@pytest.mark.parametrize(
+    "entry_options",
+    [{CONF_SENSORS: ["fill_percent"], CONF_EXCLUDED_DEVICES: [ADDRESS_B]}],
+)
+async def test_excluded_device_is_removed(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """A device the user excluded is detached from the entry at setup."""
+    registry = dr.async_get(hass)
+    registry.async_get_or_create(
+        config_entry_id=config_entry.entry_id, identifiers={(DOMAIN, ADDRESS_B)}
     )
-    entry.add_to_hass(hass)
+    await _setup(hass, config_entry)
 
-    with patch("mopeka.client.MopekaClient") as mock_client:
-        mock_client.return_value.get_full_state.return_value = [{"device_id": "123", "battery": 3.0}]
-        
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-        assert entry.state is ConfigEntryState.LOADED
-
-        assert await hass.config_entries.async_unload(entry.entry_id)
-        await hass.async_block_till_done()
-
-
-async def test_multiple_accounts(hass):
-    """Test that multiple Mopeka accounts can be added simultaneously."""
-    entry1 = MockConfigEntry(
-        domain=DOMAIN,
-        title="user1@example.com",
-        data={CONF_EMAIL: "user1@example.com", CONF_PASSWORD: "test-pass-1"},
-        options={"sensors": ["battery"]}
+    assert (
+        registry.async_get_device_by_identifier(
+            (DOMAIN, ADDRESS_B), config_entry.entry_id
+        )
+        is None
     )
-    entry2 = MockConfigEntry(
-        domain=DOMAIN,
-        title="user2@example.com",
-        data={CONF_EMAIL: "user2@example.com", CONF_PASSWORD: "test-pass-2"},
-        options={"sensors": ["battery"]}
+    assert (
+        registry.async_get_device_by_identifier(
+            (DOMAIN, ADDRESS_A), config_entry.entry_id
+        )
+        is not None
     )
-
-    mock_device1 = {"device_id": "MOP123", "name": "Gas Tank 1", "battery": 3.0}
-    mock_device2 = {"device_id": "MOP456", "name": "Gas Tank 2", "battery": 2.5}
-
-    with patch("mopeka.client.MopekaClient") as mock_client:
-        mock_client.return_value.get_full_state.side_effect = [[mock_device1], [mock_device2]]
-        
-        entry1.add_to_hass(hass)
-        assert await hass.config_entries.async_setup(entry1.entry_id)
-        await hass.async_block_till_done()
-
-        entry2.add_to_hass(hass)
-        assert await hass.config_entries.async_setup(entry2.entry_id)
-        await hass.async_block_till_done()
-
-        assert hass.states.get("sensor.gas_tank_1_battery") is not None
-        assert hass.states.get("sensor.gas_tank_2_battery") is not None
+    assert not any(ADDRESS_B in path for path, _ in fake_cloud.gateway.requests)
 
 
-async def test_setup_entry_api_error(hass):
-    """Test setup entry handles API errors gracefully."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="test@example.com",
-        data={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-password"},
-        options={"sensors": ["battery"]}
+async def test_remove_config_entry_device(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """Only devices the account no longer reports can be deleted."""
+    await _setup(hass, config_entry)
+    registry = dr.async_get(hass)
+    current = registry.async_get_device_by_identifier(
+        (DOMAIN, ADDRESS_A), config_entry.entry_id
     )
-    entry.add_to_hass(hass)
-
-    with patch("mopeka.client.MopekaClient") as mock_client:
-        mock_client.return_value.get_full_state.side_effect = [
-            [{"device_id": "123", "battery": 3.0}],
-            Exception("API connection failed")
-        ]
-        
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-        assert entry.state is ConfigEntryState.LOADED
-
-        coordinator = hass.data[DOMAIN][entry.entry_id]
-        await coordinator.async_refresh()
-        await hass.async_block_till_done()
-
-        assert await hass.config_entries.async_unload(entry.entry_id)
-        await hass.async_block_till_done()
-
-
-async def test_reload_entry(hass):
-    """Test reloading the integration when config is updated."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="test@example.com",
-        data={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-password"},
-        options={"sensors": ["battery"]}
+    stale = registry.async_get_or_create(
+        config_entry_id=config_entry.entry_id, identifiers={(DOMAIN, "OLD:00")}
     )
-    entry.add_to_hass(hass)
+    assert current is not None
 
-    with patch("mopeka.client.MopekaClient") as mock_client:
-        mock_client.return_value.get_full_state.return_value = [{"device_id": "123", "battery": 3.0}]
-        
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-        assert entry.state is ConfigEntryState.LOADED
-
-        from custom_components.mopeka_ha import async_reload_entry
-        await async_reload_entry(hass, entry)
-        await hass.async_block_till_done()
-
-        assert entry.state is ConfigEntryState.LOADED
-
-        assert await hass.config_entries.async_unload(entry.entry_id)
-        await hass.async_block_till_done()
-
-
-async def test_empty_api_response(hass):
-    """Test handling of empty API response."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="test@example.com",
-        data={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-password"},
-        options={"sensors": ["battery"]}
-    )
-    entry.add_to_hass(hass)
-
-    with patch("mopeka.client.MopekaClient") as mock_client:
-        mock_client.return_value.get_full_state.return_value = []
-        
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-        assert entry.state is ConfigEntryState.LOADED
-        assert hass.data[DOMAIN][entry.entry_id].data == {}
-
-
-async def test_invalid_interval_values(hass):
-    """Test handling of invalid interval values."""
-    from custom_components.mopeka_ha import DEFAULT_INTERVAL
-    
-    # Test interval = 0
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="test@example.com",
-        data={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-password"},
-        options={CONF_INTERVAL: 0}
-    )
-    entry.add_to_hass(hass)
-
-    with patch("mopeka.client.MopekaClient") as mock_client:
-        mock_client.return_value.get_full_state.return_value = [{"device_id": "123", "battery": 3.0}]
-        
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-        # Should use default interval
-        coordinator = hass.data[DOMAIN][entry.entry_id]
-        assert coordinator.update_interval.total_seconds() == DEFAULT_INTERVAL * 60
-    
-    # Test interval = -1
-    entry2 = MockConfigEntry(
-        domain=DOMAIN,
-        title="test2@example.com",
-        data={CONF_EMAIL: "test2@example.com", CONF_PASSWORD: "test-password"},
-        options={CONF_INTERVAL: -1}
-    )
-    entry2.add_to_hass(hass)
-
-    with patch("mopeka.client.MopekaClient") as mock_client:
-        mock_client.return_value.get_full_state.return_value = [{"device_id": "456", "battery": 2.5}]
-        
-        assert await hass.config_entries.async_setup(entry2.entry_id)
-        await hass.async_block_till_done()
-
-        coordinator2 = hass.data[DOMAIN][entry2.entry_id]
-        assert coordinator2.update_interval.total_seconds() == DEFAULT_INTERVAL * 60
-    
-    # Test interval as string
-    entry3 = MockConfigEntry(
-        domain=DOMAIN,
-        title="test3@example.com",
-        data={CONF_EMAIL: "test3@example.com", CONF_PASSWORD: "test-password"},
-        options={CONF_INTERVAL: "invalid"}
-    )
-    entry3.add_to_hass(hass)
-
-    with patch("mopeka.client.MopekaClient") as mock_client:
-        mock_client.return_value.get_full_state.return_value = [{"device_id": "789", "battery": 2.8}]
-        
-        assert await hass.config_entries.async_setup(entry3.entry_id)
-        await hass.async_block_till_done()
-
-        coordinator3 = hass.data[DOMAIN][entry3.entry_id]
-        assert coordinator3.update_interval.total_seconds() == DEFAULT_INTERVAL * 60
+    assert not await async_remove_config_entry_device(hass, config_entry, current)
+    assert await async_remove_config_entry_device(hass, config_entry, stale)

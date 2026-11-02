@@ -93,11 +93,17 @@ Open the integration entry and select **Configure** to change:
 
 | Option | Description | Default |
 |---|---|---|
-| Password | Enter a new password if you changed it in the Tank Check app. Leave blank to keep the current one. | (unchanged) |
-| Update interval | How often to poll Mopeka Cloud, in minutes. | 1 |
-| Measurements | Which measurements to create as entities. Deselecting one removes its entity. | (as chosen during setup) |
+| Update interval | How often to poll Mopeka Cloud, in minutes (1 to 60). | 5 |
+| Tanks to leave out | Tanks not to add to Home Assistant, for example tanks the built-in Mopeka Bluetooth integration already provides. Their devices and entities are removed. | None |
+| Measurements | Which measurements to create as entities. Deselecting one removes its entity. | As chosen during setup |
 
-To change the account email, use **Reconfigure** from the integration entry's menu.
+### Changing your password or email
+
+- If you change your password in the Tank Check app, Home Assistant notices the next
+  time it polls. **Settings > Devices & services** then shows Mopeka HA as needing
+  attention; select **Reconfigure** on it and enter the new password.
+- To change the email address for the same Mopeka account, use **Reconfigure**. To add a
+  different account, add the integration again.
 
 ## Entities
 
@@ -136,7 +142,9 @@ that reports that measurement.
   not reported by Mopeka, and depend on the tank settings in the app being correct.
 - **Bluetooth duplicates.** A sensor that is in your cloud account *and* in Bluetooth range
   of Home Assistant appears twice: once from this integration and once from the built-in
-  Mopeka integration.
+  Mopeka integration. Use the **Tanks to leave out** option to drop it from this one.
+- **Tanks without cloud readings.** Sensors registered to your account that have never
+  uploaded a reading through a gateway are skipped.
 
 ## Troubleshooting
 
@@ -157,20 +165,22 @@ logger:
     custom_components.mopeka_ha: debug
 ```
 
-Remove your email address from logs before sharing them.
+The integration removes passwords, tokens, and your email address from its log
+messages. Tank names and sensor addresses are not removed; edit them out before sharing if
+you prefer.
 
-### "Failed to connect" when adding the integration
+### Errors when adding the integration
 
-- Confirm that you can sign in to the Tank Check app with the same email and password.
-- Confirm that Home Assistant has internet access.
-- **Known issue:** in the current release this message appears for *any* failure while
-  signing in or fetching data, including a wrong password, and the cause is not logged.
-  Better error reporting is in progress.
+Each error is also written to the Home Assistant log with the reason Mopeka gave, even
+without debug logging.
 
-### "Invalid email or password"
+| Message | Meaning | What to do |
+|---|---|---|
+| Mopeka did not accept this email and password | Mopeka's sign-in service rejected the credentials, or the account needs a step such as a password reset or multi-factor code. | Sign in to the Tank Check app with the same details. Complete any step it asks for, then try again. |
+| Cannot reach Mopeka Cloud | A network error, a timeout, or a temporary problem or rate limit at Mopeka. | Check Home Assistant's internet access and try again in a few minutes. |
+| Unexpected error | Mopeka responded in a way the integration does not understand. | Collect a debug log and open an issue. |
 
-Mopeka rejected the credentials. Check them in the Tank Check app. If you recently reset
-your password, enter the new one under **Configure**.
+The email address is matched without regard to capitalization or surrounding spaces.
 
 ### A tank is missing
 
@@ -183,6 +193,17 @@ your password, enter the new one under **Configure**.
 - Compare the `updated_human_readable` value with the app. If the app is also out of
   date, the gateway is not uploading. Check the gateway's power and connection.
 - Check the Home Assistant log for errors from `custom_components.mopeka_ha`.
+
+### Checking your account outside Home Assistant
+
+The repository includes `scripts/live_check.py`, which signs in with the integration's own
+client and prints what Mopeka Cloud returns for each tank, using placeholder names. It needs
+Python and [uv](https://docs.astral.sh/uv/). Copy `.env.example` to `.env`, enter your
+credentials, then run:
+
+```bash
+uv run --with aiohttp --with pycognito scripts/live_check.py
+```
 
 ### Reporting a bug
 

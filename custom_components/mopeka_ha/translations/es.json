@@ -2,38 +2,67 @@
   "config": {
     "step": {
       "user": {
-        "title": "Mopeka HA",
-        "description": "Introduce tus credenciales de Mopeka para sincronizar tus sensores de tanque.",
+        "title": "Iniciar sesión en Mopeka",
+        "description": "Introduce el correo electrónico y la contraseña que usas en la aplicación Tank Check.",
         "data": {
           "email": "Correo electrónico",
           "password": "Contraseña"
         }
       },
       "sensors": {
-        "title": "Seleccionar Sensores",
-        "description": "Selecciona qué sensores quieres crear. Debes seleccionar al menos un sensor."
+        "title": "Elegir mediciones",
+        "description": "Elige qué mediciones crear como entidades para cada tanque. Los valores actuales aparecen entre paréntesis.",
+        "data": {
+          "sensors": "Mediciones"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Volver a iniciar sesión en Mopeka",
+        "description": "Mopeka ya no acepta la contraseña guardada para {email}. Introduce la contraseña que usas en la aplicación Tank Check.",
+        "data": {
+          "password": "Contraseña"
+        }
+      },
+      "reconfigure": {
+        "title": "Actualizar el inicio de sesión de Mopeka",
+        "description": "Actualiza el correo electrónico o la contraseña de esta cuenta de Mopeka.",
+        "data": {
+          "email": "Correo electrónico",
+          "password": "Contraseña"
+        }
       }
     },
     "error": {
-      "cannot_connect": "Error al conectar",
-      "invalid_auth": "Correo o contraseña incorrectos",
-      "unknown": "Error inesperado",
-      "no_sensors_selected": "Por favor, selecciona al menos un sensor",
-      "no_devices_found": "No se encontraron dispositivos en tu cuenta de Mopeka"
+      "cannot_connect": "No se puede conectar con Mopeka Cloud. Comprueba que Home Assistant tiene acceso a internet e inténtalo de nuevo. El registro de Home Assistant tiene más detalles.",
+      "invalid_auth": "Mopeka no aceptó este correo electrónico y contraseña. Comprueba que funcionan en la aplicación Tank Check. El registro de Home Assistant tiene más detalles.",
+      "unknown": "Error inesperado. El registro de Home Assistant tiene más detalles.",
+      "no_sensors_selected": "Selecciona al menos una medición."
     },
     "abort": {
-      "already_configured": "Esta cuenta ya está configurada"
+      "already_configured": "Esta cuenta de Mopeka ya está configurada.",
+      "reauth_successful": "Sesión iniciada de nuevo correctamente.",
+      "reconfigure_successful": "Datos de inicio de sesión actualizados.",
+      "wrong_account": "Estos datos pertenecen a otra cuenta de Mopeka. Para añadir otra cuenta, añade la integración de nuevo."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Seleccionar Sensores",
-        "description": "Selecciona qué sensores quieres crear. Debes seleccionar al menos un sensor."
+        "title": "Opciones de Mopeka",
+        "data": {
+          "update_interval": "Intervalo de actualización",
+          "excluded_devices": "Tanques que no se añaden",
+          "sensors": "Mediciones"
+        },
+        "data_description": {
+          "update_interval": "Cada cuántos minutos se consultan nuevas lecturas en Mopeka Cloud.",
+          "excluded_devices": "Los tanques seleccionados aquí no se añaden a Home Assistant. Úsalo para tanques que ya proporciona la integración Bluetooth de Mopeka integrada.",
+          "sensors": "Mediciones que se crean como entidades para cada tanque."
+        }
       }
     },
     "error": {
-      "no_sensors_selected": "Por favor, selecciona al menos un sensor"
+      "no_sensors_selected": "Selecciona al menos una medición."
     }
   }
 }

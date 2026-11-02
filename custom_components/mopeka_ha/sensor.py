@@ -1,25 +1,27 @@
-"""Mopeka HA Sensors."""
-import logging
+"""Sensor platform for Mopeka HA."""
+
+from __future__ import annotations
+
 import re
+from typing import Any, Final
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.helpers import device_registry as dr
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.util import slugify
 
-from . import DOMAIN
+from .const import CONF_SENSORS, DOMAIN
+from .coordinator import MopekaConfigEntry, MopekaCoordinator
+from .models import MEASUREMENT_KEYS
 
-_LOGGER = logging.getLogger(__name__)
-
-DEVICE_INFO_FIELDS = {"device_id", "wifi_gate_id", "brand", "model_number", "name", "timestamp_iso", "history_start_date", "history_depth_days"}
-
-MAP = {
+# Unit, icon, and device class for each numeric measurement.
+_NUMERIC: Final[dict[str, tuple[str, str, SensorDeviceClass | None]]] = {
     "tank_height": ("m", "ruler", None),
     "temperature_c": ("C", "thermometer", None),
     "temperature_f": ("F", "thermometer", None),
@@ -31,128 +33,80 @@ MAP = {
     "volume_liters": ("L", "water", None),
     "volume_gallons_us": ("gal", "water", None),
 }
+_ICONS: Final = {"vertical": "check-circle", "propaneButaneRatio": "information"}
 
-def get_config(key, val):
-    if isinstance(val, bool):
-        return None, "check-circle", None, None
-    if isinstance(val, str):
-        return None, "text", None, None
-    if key in MAP:
-        unit, icon, device_class = MAP[key]
-        return unit, icon, device_class, SensorStateClass.MEASUREMENT if unit else None
-    return None, "information", None, None
 
-def _sensor_key_from_unique_id(unique_id, known_sensor_keys):
-    for sensor_key in sorted(known_sensor_keys, key=len, reverse=True):
-        suffix = f"_{sensor_key}"
-        if unique_id.endswith(suffix):
-            return sensor_key
+def _measurement_key(unique_id: str) -> str | None:
+    """Return the measurement key at the end of an entity's unique ID."""
+    for key in sorted(MEASUREMENT_KEYS, key=len, reverse=True):
+        if unique_id.endswith(f"_{key}"):
+            return key
     return None
 
-async def async_setup_entry(hass, entry, async_add_entities):
-    coordinator = hass.data[DOMAIN][entry.entry_id]
-    selected = entry.options.get("sensors", [])
-    device_registry = dr.async_get(hass)
-    entity_registry = er.async_get(hass)
 
-    existing_entries = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
-    
-    all_possible_keys = set(MAP.keys()) | {
-        "updated_human_readable", "vertical", "propaneButaneRatio", 
-        "tank_type", "volume_original_unit", "tank_height"
-    }
-    
-    for ent in existing_entries:
-        s_key = _sensor_key_from_unique_id(ent.unique_id, all_possible_keys)
-        if s_key and s_key not in selected:
-            entity_registry.async_remove(ent.entity_id)
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: MopekaConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+) -> None:
+    """Create sensors for the measurements the user selected."""
+    coordinator = entry.runtime_data
+    selected = set(entry.options.get(CONF_SENSORS, []))
 
-    for device_id, data in coordinator.data.items():
-        api_name = data.get("name")
-        if not api_name:
-            continue
+    # Remove entities for measurements the user has deselected.
+    registry = er.async_get(hass)
+    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+        key = _measurement_key(entity.unique_id)
+        if key is not None and key not in selected:
+            registry.async_remove(entity.entity_id)
 
-        device = device_registry.async_get_device(identifiers={(DOMAIN, device_id)})
-        if device and device.name != api_name:
-            device_registry.async_update_device(device.id, name=api_name)
+    async_add_entities(
+        MopekaSensor(coordinator, address, key)
+        for address in coordinator.data.tanks
+        for key in MEASUREMENT_KEYS
+        if key in selected
+    )
 
-        if not device:
-            continue
 
-        known_sensor_keys = set(selected)
-        known_sensor_keys.update(k for k in data if k not in DEVICE_INFO_FIELDS)
+class MopekaSensor(CoordinatorEntity[MopekaCoordinator], SensorEntity):
+    """One measurement of one Mopeka tank."""
 
-        new_prefix = slugify(api_name) or ""
-        if not new_prefix:
-            _LOGGER.debug("Skipping device %s: empty slugified name", device_id)
-            continue
-            
-        entity_entries = er.async_entries_for_device(entity_registry, device.id, include_disabled_entities=True)
+    _attr_has_entity_name = True
 
-        for entity_entry in entity_entries:
-            if entity_entry.domain != "sensor":
-                continue
-            if not entity_entry.unique_id:
-                continue
-
-            sensor_key = _sensor_key_from_unique_id(entity_entry.unique_id, known_sensor_keys)
-            if not sensor_key:
-                continue
-            
-            if sensor_key not in selected:
-                continue
-
-            safe_sensor_key = slugify(sensor_key)
-            expected_entity_id = f"sensor.{new_prefix}_{safe_sensor_key}"
-            
-            if entity_entry.entity_id == expected_entity_id:
-                continue
-            if entity_registry.async_is_registered(expected_entity_id):
-                continue
-
-            try:
-                entity_registry.async_update_entity(entity_entry.entity_id, new_entity_id=expected_entity_id)
-            except ValueError as e:
-                _LOGGER.debug("Could not update entity ID %s to %s: %s", entity_entry.entity_id, expected_entity_id, e)
-
-    entities = []
-    for device_id, device_data in coordinator.data.items():
-        for sensor_key in selected:
-            if sensor_key in device_data:
-                entities.append(MopekaSensor(coordinator, device_id, sensor_key))
-    async_add_entities(entities)
-
-class MopekaSensor(CoordinatorEntity, SensorEntity):
-    def __init__(self, coordinator, device_id, sensor_key):
+    def __init__(self, coordinator: MopekaCoordinator, address: str, key: str) -> None:
+        """Initialize the sensor."""
         super().__init__(coordinator)
-        self._dev_id = device_id
-        self._key = sensor_key
-        device_data = coordinator.data.get(device_id, {})
-        unit, icon, device_class, state_class = get_config(sensor_key, device_data.get(sensor_key))
-        self._attr_unique_id = f"{device_id}_{sensor_key}"
-        self._attr_native_unit_of_measurement = unit
-        self._attr_device_class = device_class
-        self._attr_state_class = state_class
+        self._address = address
+        self._key = key
+        self._attr_unique_id = f"{address}_{key}"
+        self._attr_name = (
+            re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", key).replace("_", " ").title()
+        )
+        if key in _NUMERIC:
+            unit, icon, device_class = _NUMERIC[key]
+            self._attr_native_unit_of_measurement = unit
+            self._attr_device_class = device_class
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        else:
+            icon = _ICONS.get(key, "text")
         self._attr_icon = f"mdi:{icon}"
-        self._attr_has_entity_name = True
 
-    @property
-    def name(self):
-        return re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", self._key).replace("_", " ").title()
-
-    @property
-    def device_info(self):
-        data = self.coordinator.data.get(self._dev_id, {})
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._dev_id)},
-            name=data.get("name"),
-            manufacturer=data.get("brand"),
-            model=str(data.get("model_number")),
-            serial_number=data.get("device_id"),
-            hw_version=data.get("wifi_gate_id"),
+        device = coordinator.data.tanks[address].device
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, address)},
+            name=device.name,
+            manufacturer="Mopeka",
+            model=device.model_number,
+            serial_number=address,
         )
 
     @property
-    def native_value(self):
-        device_data = self.coordinator.data.get(self._dev_id, {})
-        return device_data.get(self._key)
+    def available(self) -> bool:
+        """Return False while the tank is missing from the cloud response."""
+        return super().available and self._address in self.coordinator.data.tanks
+
+    @property
+    def native_value(self) -> Any:
+        """Return the current value of the measurement."""
+        tank = self.coordinator.data.tanks.get(self._address)
+        return tank.values().get(self._key) if tank else None

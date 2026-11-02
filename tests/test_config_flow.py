@@ -1,606 +1,325 @@
-"""Tests for the Mopeka config flow."""
-from unittest.mock import MagicMock, patch
+"""Tests for the Mopeka HA config and options flows."""
 
-from homeassistant import config_entries, data_entry_flow
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+from unittest.mock import patch
+
+import aiohttp
+import pytest
+from homeassistant import config_entries
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
+from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import device_registry as dr
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.mopeka_ha import DOMAIN, CONF_INTERVAL
+from custom_components.mopeka_ha.const import (
+    CONF_EXCLUDED_DEVICES,
+    CONF_SENSORS,
+    CONF_UPDATE_INTERVAL,
+    DEFAULT_UPDATE_INTERVAL,
+    DOMAIN,
+)
 
-async def test_form_user_success(hass):
-    """Test we get the form and handle a successful user auth."""
+from .conftest import ADDRESS_A, ADDRESS_B, EMAIL, PASSWORD
+from .fake_cloud import FakeCloud
+
+USER_INPUT = {CONF_EMAIL: EMAIL, CONF_PASSWORD: PASSWORD}
+
+
+def _choices(result: dict[str, Any], field: str) -> dict[str, str]:
+    """Return {value: label} for a select selector in a form result."""
+    for key, selector in result["data_schema"].schema.items():
+        if key == field:
+            return {o["value"]: o["label"] for o in selector.config["options"]}
+    raise AssertionError(f"{field} not in form")
+
+
+async def test_user_flow(hass: HomeAssistant, fake_cloud: FakeCloud) -> None:
+    """Signing in, choosing measurements, and creating the entry."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
 
-    mock_devices = [{"device_id": "12345", "name": "Propane Tank", "battery_voltage": 3.0}]
-
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.return_value = mock_devices
-        
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-password"},
-        )
-
-        assert result2["type"] == data_entry_flow.FlowResultType.FORM
-        assert result2["step_id"] == "sensors"
-        assert result2["errors"] == {}
-
-        with patch("custom_components.mopeka_ha.async_setup_entry", return_value=True):
-            result3 = await hass.config_entries.flow.async_configure(
-                result2["flow_id"],
-                user_input={"battery_voltage (3.0)": True},
-            )
-
-    assert result3["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
-    assert result3["title"] == "test@example.com"
-    assert result3["data"][CONF_EMAIL] == "test@example.com"
-    assert result3["data"][CONF_PASSWORD] == "test-password"
-    assert "battery_voltage" in result3["options"]["sensors"]
-
-async def test_form_user_cannot_connect(hass):
-    """Test we handle cannot connect error."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_EMAIL: f"  {EMAIL} ", CONF_PASSWORD: PASSWORD}
     )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "sensors"
+    choices = _choices(result, CONF_SENSORS)
+    assert choices["fill_percent"] == "fill_percent (50.0)"
+    assert choices["battery_voltage"] == "battery_voltage (2.94)"
 
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.side_effect = Exception("Connection drop")
-        
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-password"},
-        )
-
-    assert result2["type"] == data_entry_flow.FlowResultType.FORM
-    assert result2["step_id"] == "user"
-    assert result2["errors"] == {"base": "cannot_connect"}
-
-async def test_form_user_invalid_auth(hass):
-    """Test handling of invalid authentication."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_SENSORS: ["fill_percent", "battery_voltage"]}
     )
+    await hass.async_block_till_done()
 
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.side_effect = Exception("401 Unauthorized")
-
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "wrong-password"},
-        )
-
-    assert result2["type"] == data_entry_flow.FlowResultType.FORM
-    assert result2["errors"] == {"base": "invalid_auth"}
-
-async def test_step_reconfigure(hass):
-    """Test the reconfigure step."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "old-password"},
-        entry_id="mock_id",
-    )
-    entry.add_to_hass(hass)
-
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": config_entries.SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
-    )
-    assert result["step_id"] == "reconfigure"
-
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.return_value = []
-
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "new-password"},
-        )
-
-    assert result2["type"] == data_entry_flow.FlowResultType.ABORT
-    assert result2["reason"] == "reconfigure_successful"
-    assert entry.data[CONF_PASSWORD] == "new-password"
-
-async def test_options_flow(hass):
-    """Test the options flow."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-pass"},
-        options={"sensors": ["battery_voltage"], CONF_INTERVAL: 60},
-    )
-    entry.add_to_hass(hass)
-
-    mock_coord = MagicMock()
-    mock_coord.data = {"123": {"battery_voltage": 3.0, "fill_percent": 50}}
-    hass.data[DOMAIN] = {entry.entry_id: mock_coord}
-
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
-    assert result["step_id"] == "init"
-
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.return_value = []
-        
-        result2 = await hass.config_entries.options.async_configure(
-            result["flow_id"],
-            user_input={
-                CONF_INTERVAL: 120,
-                "battery_voltage (3.0)": True,
-                "fill_percent (50)": True,
-                CONF_PASSWORD: "new-secret-pass",
-            },
-        )
-
-    assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
-    assert entry.options[CONF_INTERVAL] == 120
-    assert "fill_percent" in entry.options["sensors"]
-    assert entry.data[CONF_PASSWORD] == "new-secret-pass"
-
-
-async def test_form_user_abort_flow(hass):
-    """Test we handle flow abortion during setup."""
-    from homeassistant.data_entry_flow import AbortFlow
-    
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
-    )
-
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.side_effect = AbortFlow("test_abort")
-        
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-password"},
-        )
-
-    assert result2["type"] == data_entry_flow.FlowResultType.ABORT
-    assert result2["reason"] == "test_abort"
-
-
-async def test_form_user_no_sensors_selected(hass):
-    """Test we handle no sensors selected."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
-    )
-
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.return_value = [{"device_id": "123", "name": "Tank"}]
-        
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-password"},
-        )
-
-        assert result2["type"] == data_entry_flow.FlowResultType.FORM
-        assert result2["step_id"] == "sensors"
-
-        result3 = await hass.config_entries.flow.async_configure(
-            result2["flow_id"],
-            user_input={},  # No sensors selected
-        )
-
-    assert result3["type"] == data_entry_flow.FlowResultType.FORM
-    assert result3["step_id"] == "sensors"
-    assert result3["errors"] == {"base": "no_sensors_selected"}
-
-
-async def test_form_sensors_api_error(hass):
-    """Test sensors step handles API errors gracefully."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
-    )
-
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.return_value = [{"device_id": "123", "name": "Tank", "battery_voltage": 3.0}]
-        
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-password"},
-        )
-
-        assert result2["type"] == data_entry_flow.FlowResultType.FORM
-        assert result2["step_id"] == "sensors"
-
-        with patch("custom_components.mopeka_ha.async_setup_entry", return_value=True):
-            result3 = await hass.config_entries.flow.async_configure(
-                result2["flow_id"],
-                user_input={"battery_voltage (3.0)": True},
-            )
-
-    assert result3["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
-
-
-async def test_reconfigure_invalid_auth(hass):
-    """Test reconfigure with invalid authentication."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "old-password"},
-        entry_id="mock_id",
-    )
-    entry.add_to_hass(hass)
-
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": config_entries.SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
-    )
-    assert result["step_id"] == "reconfigure"
-
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.side_effect = Exception("401 Unauthorized")
-
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "wrong-password"},
-        )
-
-    assert result2["type"] == data_entry_flow.FlowResultType.FORM
-    assert result2["errors"] == {"base": "invalid_auth"}
-
-
-async def test_reconfigure_cannot_connect(hass):
-    """Test reconfigure with connection error."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "old-password"},
-        entry_id="mock_id",
-    )
-    entry.add_to_hass(hass)
-
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": config_entries.SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
-    )
-    assert result["step_id"] == "reconfigure"
-
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.side_effect = Exception("Connection failed")
-
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-password"},
-        )
-
-    assert result2["type"] == data_entry_flow.FlowResultType.FORM
-    assert result2["errors"] == {"base": "cannot_connect"}
-
-
-async def test_get_client_function(hass):
-    """Test _get_client function creates MopekaClient with correct parameters."""
-    from unittest.mock import patch
-    from custom_components.mopeka_ha import API_DEFAULTS
-    from custom_components.mopeka_ha.config_flow import _get_client
-    
-    test_data = {
-        CONF_EMAIL: "test@example.com",
-        CONF_PASSWORD: "test-password"
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == EMAIL
+    assert result["data"] == USER_INPUT
+    assert result["options"] == {
+        CONF_SENSORS: ["fill_percent", "battery_voltage"],
+        CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
     }
-    
-    with patch("mopeka.client.MopekaClient") as mock_mopeka_client:
-        client = _get_client(test_data)
-        
-        mock_mopeka_client.assert_called_once_with({
-            "username": "test@example.com",
-            "password": "test-password",
-            **API_DEFAULTS
-        })
-        
-        assert client is not None
+    entry = result["result"]
+    assert entry.unique_id == EMAIL
+    assert entry.state is ConfigEntryState.LOADED
+    assert hass.states.get("sensor.tank_a_fill_percent") is not None
 
 
-async def test_options_flow_no_password_change(hass):
-    """Test options flow without changing password."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-pass"},
-        options={"sensors": ["battery_voltage"], CONF_INTERVAL: 60},
+def _wrong_password(cloud: FakeCloud) -> None:
+    cloud.cognito.users[EMAIL].password = "something-else"
+
+
+def _throttled(cloud: FakeCloud) -> None:
+    cloud.cognito.queue_error("TooManyRequestsException", "Rate exceeded")
+
+
+def _offline(cloud: FakeCloud) -> None:
+    cloud.cognito.queue(aiohttp.ClientConnectionError("Cannot connect to host"))
+
+
+def _gateway_down(cloud: FakeCloud) -> None:
+    cloud.gateway.queued_exceptions.append(TimeoutError())
+
+
+def _unknown_cognito_error(cloud: FakeCloud) -> None:
+    cloud.cognito.queue_error(
+        "ResourceNotFoundException", "User pool client does not exist"
     )
-    entry.add_to_hass(hass)
-
-    mock_coord = MagicMock()
-    mock_coord.data = {"123": {"battery_voltage": 3.0}}
-    hass.data[DOMAIN] = {entry.entry_id: mock_coord}
-
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
-
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.return_value = []
-        
-        result2 = await hass.config_entries.options.async_configure(
-            result["flow_id"],
-            user_input={
-                CONF_INTERVAL: 120,
-                "battery_voltage (3.0)": True,
-            },
-        )
-
-    assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
-    assert entry.options[CONF_INTERVAL] == 120
-    assert entry.data[CONF_PASSWORD] == "test-pass"  # Password unchanged
 
 
-async def test_reconfigure_abort_flow(hass):
-    """Test reconfigure with flow abortion."""
-    from homeassistant.data_entry_flow import AbortFlow
-    
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "old-password"},
-        entry_id="mock_id",
-    )
-    entry.add_to_hass(hass)
-
+@pytest.mark.parametrize(
+    ("break_cloud", "error", "log_text"),
+    [
+        (_wrong_password, "invalid_auth", "NotAuthorizedException"),
+        (_throttled, "cannot_connect", "TooManyRequestsException"),
+        (_offline, "cannot_connect", "Cannot connect to host"),
+        (_gateway_down, "cannot_connect", "Timed out contacting Mopeka Cloud"),
+        (_unknown_cognito_error, "unknown", "ResourceNotFoundException"),
+    ],
+)
+async def test_user_flow_errors(
+    hass: HomeAssistant,
+    fake_cloud: FakeCloud,
+    caplog: pytest.LogCaptureFixture,
+    break_cloud: Callable[[FakeCloud], None],
+    error: str,
+    log_text: str,
+) -> None:
+    """Each failure shows its own error, logs the reason, and can be retried."""
     result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": config_entries.SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
+    original_password = fake_cloud.cognito.users[EMAIL].password
+    break_cloud(fake_cloud)
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], USER_INPUT
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": error}
+    assert log_text in caplog.text
+    assert PASSWORD not in caplog.text
+
+    fake_cloud.cognito.users[EMAIL].password = original_password
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], USER_INPUT
+    )
+    assert result["step_id"] == "sensors"
+
+
+async def test_user_flow_unexpected_exception(
+    hass: HomeAssistant, fake_cloud: FakeCloud, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A bug in the client shows 'unknown' and logs a traceback."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    with patch(
+        "custom_components.mopeka_ha.config_flow.MopekaApiClient.get_account_data",
+        side_effect=RuntimeError("bug"),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], USER_INPUT
+        )
+    assert result["errors"] == {"base": "unknown"}
+    assert "Traceback" in caplog.text
+
+
+async def test_user_flow_already_configured(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """The same account, in any letter case, cannot be added twice."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_EMAIL: EMAIL.upper(), CONF_PASSWORD: PASSWORD}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert fake_cloud.cognito.requests == []
+
+
+async def test_user_flow_requires_a_measurement(
+    hass: HomeAssistant, fake_cloud: FakeCloud
+) -> None:
+    """Submitting no measurements shows an error."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], USER_INPUT
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_SENSORS: []}
+    )
+    assert result["step_id"] == "sensors"
+    assert result["errors"] == {"base": "no_sensors_selected"}
+
+
+async def test_reauth(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """Re-authentication stores the new password after checking it."""
+    fake_cloud.cognito.users[EMAIL].password = "new-password"
+    result = await config_entry.start_reauth_flow(hass)
+    assert result["step_id"] == "reauth_confirm"
+    assert result["description_placeholders"]["email"] == EMAIL
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: PASSWORD}
+    )
+    assert result["errors"] == {"base": "invalid_auth"}
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "new-password"}
+    )
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert config_entry.data[CONF_PASSWORD] == "new-password"
+    assert config_entry.data[CONF_EMAIL] == EMAIL
+
+
+async def test_reconfigure(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """Reconfigure updates the sign-in details of the same account."""
+    fake_cloud.cognito.users[EMAIL].password = "new-password"
+    result = await config_entry.start_reconfigure_flow(hass)
     assert result["step_id"] == "reconfigure"
 
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.side_effect = AbortFlow("test_abort")
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_EMAIL: EMAIL, CONF_PASSWORD: "wrong"}
+    )
+    assert result["errors"] == {"base": "invalid_auth"}
 
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-password"},
-        )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_EMAIL: EMAIL.title(), CONF_PASSWORD: "new-password"}
+    )
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert config_entry.data == {
+        CONF_EMAIL: EMAIL.title(),
+        CONF_PASSWORD: "new-password",
+    }
 
-    assert result2["type"] == data_entry_flow.FlowResultType.ABORT
-    assert result2["reason"] == "test_abort"
+
+async def test_reconfigure_other_account(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """Reconfigure cannot switch the entry to a different account."""
+    result = await config_entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_EMAIL: "other@example.com", CONF_PASSWORD: PASSWORD}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "wrong_account"
+    assert config_entry.data[CONF_EMAIL] == EMAIL
 
 
-async def test_form_sensors_api_error_on_refresh(hass):
-    """Test sensors step handles API errors gracefully on refresh."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
+async def test_options_flow(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """Options change the interval, excluded tanks, and measurements."""
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    device_registry = dr.async_get(hass)
+    assert device_registry.async_get_device_by_identifier(
+        (DOMAIN, ADDRESS_B), config_entry.entry_id
     )
 
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.return_value = [{"device_id": "123", "name": "Tank", "battery_voltage": 3.0}]
-        
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-password"},
-        )
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+    assert result["step_id"] == "init"
+    assert _choices(result, CONF_EXCLUDED_DEVICES) == {
+        ADDRESS_A: "Tank A",
+        ADDRESS_B: "Tank B",
+    }
 
-        assert result2["type"] == data_entry_flow.FlowResultType.FORM
-        assert result2["step_id"] == "sensors"
-
-        mock_client.return_value.get_full_state.side_effect = Exception("API error")
-        
-        with patch("custom_components.mopeka_ha.async_setup_entry", return_value=True):
-            result3 = await hass.config_entries.flow.async_configure(
-                result2["flow_id"],
-                user_input={"battery_voltage (3.0)": True},
-            )
-
-    assert result3["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
-
-
-async def test_form_sensors_empty_data(hass):
-    """Test sensors step with empty device data."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
-    )
-
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.return_value = []
-        
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-password"},
-        )
-
-        assert result2["type"] == data_entry_flow.FlowResultType.FORM
-        assert result2["step_id"] == "sensors"
-
-        result3 = await hass.config_entries.flow.async_configure(
-            result2["flow_id"],
-            user_input={},
-        )
-
-    assert result3["type"] == data_entry_flow.FlowResultType.FORM
-    assert result3["errors"] == {"base": "no_sensors_selected"}
-
-
-async def test_options_flow_invalid_auth(hass):
-    """Test options flow with invalid authentication."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-pass"},
-        options={"sensors": ["battery_voltage"], CONF_INTERVAL: 60},
-    )
-    entry.add_to_hass(hass)
-
-    mock_coord = MagicMock()
-    mock_coord.data = {"123": {"battery_voltage": 3.0}}
-    hass.data[DOMAIN] = {entry.entry_id: mock_coord}
-
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
-
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.side_effect = Exception("401 Unauthorized")
-        
-        result2 = await hass.config_entries.options.async_configure(
-            result["flow_id"],
-            user_input={
-                CONF_INTERVAL: 120,
-                "battery_voltage (3.0)": True,
-                CONF_PASSWORD: "new-pass",
-            },
-        )
-
-    assert result2["type"] == data_entry_flow.FlowResultType.FORM
-    assert result2["errors"] == {"base": "invalid_auth"}
-
-
-async def test_options_flow_cannot_connect(hass):
-    """Test options flow with connection error."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-pass"},
-        options={"sensors": ["battery_voltage"], CONF_INTERVAL: 60},
-    )
-    entry.add_to_hass(hass)
-
-    mock_coord = MagicMock()
-    mock_coord.data = {"123": {"battery_voltage": 3.0}}
-    hass.data[DOMAIN] = {entry.entry_id: mock_coord}
-
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
-
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.side_effect = Exception("Connection failed")
-        
-        result2 = await hass.config_entries.options.async_configure(
-            result["flow_id"],
-            user_input={
-                CONF_INTERVAL: 120,
-                "battery_voltage (3.0)": True,
-                CONF_PASSWORD: "new-pass",
-            },
-        )
-
-    assert result2["type"] == data_entry_flow.FlowResultType.FORM
-    assert result2["errors"] == {"base": "cannot_connect"}
-
-
-async def test_options_flow_coordinator_data_empty(hass):
-    """Test options flow when coordinator data is empty."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={CONF_EMAIL: "test@example.com", CONF_PASSWORD: "test-pass"},
-        options={"sensors": ["battery_voltage"], CONF_INTERVAL: 60},
-    )
-    entry.add_to_hass(hass)
-
-    mock_coord = MagicMock()
-    mock_coord.data = {}  # Empty data
-    hass.data[DOMAIN] = {entry.entry_id: mock_coord}
-
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
-
-    # Should not crash, just show form with n/a values - must select at least one sensor
-    with patch("custom_components.mopeka_ha.config_flow._get_client") as mock_client:
-        mock_client.return_value.get_full_state.return_value = []
-        
-        result2 = await hass.config_entries.options.async_configure(
-            result["flow_id"],
-            user_input={
-                CONF_INTERVAL: 120,
-                CONF_PASSWORD: "new-pass",
-                "battery_voltage (n/a)": True,  # Select at least one sensor
-            },
-        )
-
-    assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
-
-
-async def test_get_combined_states():
-    """Test _get_combined_states function."""
-    from custom_components.mopeka_ha.config_flow import _get_combined_states
-
-    states_list = [
-        {"device_id": "123", "battery_voltage": 3.0, "fill_percent": 50},
-        {"device_id": "456", "battery_voltage": 2.8},
-        {"device_id": "789", "fill_percent": 75, "temperature_c": 20.5},
-    ]
-
-    combined = _get_combined_states(states_list)
-
-    assert combined["battery_voltage"] == 3.0
-    assert combined["fill_percent"] == 50
-    assert combined["temperature_c"] == 20.5
-
-    states_list[1]["battery_voltage"] = "n/a"
-    combined = _get_combined_states(states_list)
-
-    assert combined["battery_voltage"] == 3.0
-
-    states_list[0]["battery_voltage"] = None
-    combined = _get_combined_states(states_list)
-
-    assert "battery_voltage" not in combined or combined["battery_voltage"] == "n/a"
-
-
-async def test_get_combined_states_empty_list():
-    """Test _get_combined_states with empty states list."""
-    from custom_components.mopeka_ha.config_flow import _get_combined_states
-
-    states_list = []
-    combined = _get_combined_states(states_list)
-
-    assert combined == {}
-
-
-async def test_get_combined_states_all_none():
-    """Test _get_combined_states when all devices have None values."""
-    from custom_components.mopeka_ha.config_flow import _get_combined_states
-
-    states_list = [
-        {"device_id": "123", "battery_voltage": None, "fill_percent": None},
-        {"device_id": "456", "battery_voltage": None, "temperature_c": None},
-    ]
-
-    combined = _get_combined_states(states_list)
-
-    assert combined == {}
-
-
-async def test_get_combined_states_all_na():
-    """Test _get_combined_states when all devices have n/a values."""
-    from custom_components.mopeka_ha.config_flow import _get_combined_states
-
-    states_list = [
-        {"device_id": "123", "battery_voltage": "n/a", "fill_percent": "n/a"},
-        {"device_id": "456", "battery_voltage": "n/a", "temperature_c": "n/a"},
-    ]
-
-    combined = _get_combined_states(states_list)
-
-    # "n/a" values are included when no better value exists
-    assert combined["battery_voltage"] == "n/a"
-    assert combined["fill_percent"] == "n/a"
-    assert combined["temperature_c"] == "n/a"
-
-
-async def test_get_combined_states_mixed_values():
-    """Test _get_combined_states with mix of valid, None, and n/a values."""
-    from custom_components.mopeka_ha.config_flow import _get_combined_states
-
-    states_list = [
-        {"device_id": "123", "battery_voltage": 3.0, "fill_percent": None},
-        {"device_id": "456", "battery_voltage": "n/a", "fill_percent": 50},
-        {"device_id": "789", "battery_voltage": 2.5, "fill_percent": "n/a"},
-    ]
-
-    combined = _get_combined_states(states_list)
-
-    assert combined["battery_voltage"] == 3.0  # First valid value
-    assert combined["fill_percent"] == 50  # First valid value
-
-
-async def test_get_combined_states_filters_static_sensors():
-    """Test _get_combined_states only includes STATIC_SENSORS keys."""
-    from custom_components.mopeka_ha.config_flow import _get_combined_states
-
-    states_list = [
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
         {
-            "device_id": "123",
-            "battery_voltage": 3.0,
-            "fill_percent": 50,
-            "custom_field": "value",  # Not in STATIC_SENSORS
-            "random_key": 123,  # Not in STATIC_SENSORS
+            CONF_UPDATE_INTERVAL: 15.0,
+            CONF_EXCLUDED_DEVICES: [ADDRESS_B],
+            CONF_SENSORS: ["fill_percent"],
         },
-    ]
+    )
+    await hass.async_block_till_done()
 
-    combined = _get_combined_states(states_list)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert config_entry.options == {
+        CONF_UPDATE_INTERVAL: 15,
+        CONF_EXCLUDED_DEVICES: [ADDRESS_B],
+        CONF_SENSORS: ["fill_percent"],
+    }
+    # The entry reloads: Tank B is gone and only the chosen measurement remains.
+    assert (
+        device_registry.async_get_device_by_identifier(
+            (DOMAIN, ADDRESS_B), config_entry.entry_id
+        )
+        is None
+    )
+    assert hass.states.get("sensor.tank_a_fill_percent") is not None
+    assert hass.states.get("sensor.tank_a_battery_voltage") is None
+    assert config_entry.runtime_data.update_interval.total_seconds() == 15 * 60
 
-    assert "battery_voltage" in combined
-    assert "fill_percent" in combined
-    assert "custom_field" not in combined
-    assert "random_key" not in combined
+
+async def test_options_flow_requires_a_measurement(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """Options cannot remove every measurement."""
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_UPDATE_INTERVAL: 5, CONF_SENSORS: []}
+    )
+    assert result["errors"] == {"base": "no_sensors_selected"}
+
+
+@pytest.mark.parametrize(
+    "entry_options",
+    [{CONF_SENSORS: ["fill_percent"], CONF_EXCLUDED_DEVICES: ["GONE:00"]}],
+)
+async def test_options_flow_entry_not_loaded(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """Options still open when the entry failed to load, keeping old exclusions."""
+    fake_cloud.cognito.users[EMAIL].password = "changed"
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert config_entry.state is ConfigEntryState.SETUP_ERROR
+
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+    assert _choices(result, CONF_EXCLUDED_DEVICES) == {"GONE:00": "GONE:00"}

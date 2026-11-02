@@ -5,7 +5,7 @@ description = "Home Assistant custom integration for Mopeka ultrasonic propane t
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
-authors = [{name = "Aleksandr Zhuravlev", email = "jss.putty@gmail.com"}]
+authors = [{name = "mopeka-ha contributors"}]
 keywords = ["home-assistant", "hacs", "integration", "mopeka", "propane", "tank", "sensor"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -30,10 +30,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/MedVedZot/mopeka-ha"
-Documentation = "https://github.com/MedVedZot/mopeka-ha"
-Repository = "https://github.com/MedVedZot/mopeka-ha.git"
-Issues = "https://github.com/MedVedZot/mopeka-ha/issues"
+Homepage = "https://github.com/gsperry/mopeka-ha"
+Documentation = "https://github.com/gsperry/mopeka-ha"
+Repository = "https://github.com/gsperry/mopeka-ha.git"
+Issues = "https://github.com/gsperry/mopeka-ha/issues"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

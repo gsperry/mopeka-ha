@@ -1,451 +1,220 @@
-# Mopeka HA Integration
+# Mopeka HA
 
-<p align="left">
-  <a href="https://buymeacoffee.com/MedVedZot">
-    <img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&slug=MedVedZot&button_colour=FFDD00&font_colour=000000&font_family=Arial&outline_colour=000000&coffee_colour=ffffff" />
-  </a>
-</p>
-No subscriptions. Just support if you find value.
-<br/><br/>
+A Home Assistant custom integration that reads Mopeka tank sensors from Mopeka Cloud, the
+same service the Tank Check mobile app uses.
 
-Home Assistant custom integration for Mopeka ultrasonic propane tank sensors via Mopeka Cloud API.
+Use it for sensors that report through a Mopeka gateway and are out of Bluetooth range of
+your Home Assistant host. For sensors within Bluetooth range, use Home Assistant's built-in
+[Mopeka integration](https://www.home-assistant.io/integrations/mopeka/) instead: it is
+local, faster, and does not depend on a cloud service.
 
-![Version](https://img.shields.io/badge/version-1.2.5-blue)
-![Home Assistant](https://img.shields.io/badge/HA-2024.1.0%2B-green)
-![License](https://img.shields.io/badge/license-MIT-orange)
+> **Unofficial.** Mopeka does not publish or support this API. The integration signs in
+> the same way the mobile app does, and it can stop working without notice if Mopeka
+> changes its service.
 
-## Features
+## Contents
 
-- 📊 **Dynamic Sensor Creation** - Automatically discovers available sensors from API
-- ☁️ **Cloud API Integration** - Works with Mopeka WiFi gateways (Bluetooth not required)
-- 🔐 **Secure Authentication** - Uses your Mopeka account credentials
-- 🔄 **Automatic Updates** - Data refreshes every 1 minute
-- 📱 **Multiple Sensors** - Choose which sensors to create for each tank
-- 📈 **Historical Data** - State class MEASUREMENT for history graphs
-- 🎛️ **Customizable** - Add/remove sensors anytime via Options Flow
-- 👥 **Multiple Accounts** - Add multiple Mopeka accounts simultaneously
+- [Supported hardware](#supported-hardware)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Entities](#entities)
+- [Limitations](#limitations)
+- [Troubleshooting](#troubleshooting)
+- [Data and privacy](#data-and-privacy)
+- [Removal](#removal)
+- [Contributing](#contributing)
+- [Credits and license](#credits-and-license)
+
+## Supported hardware
+
+The integration reads whatever your Mopeka account has in the cloud. A sensor is supported
+when a Mopeka gateway uploads its readings, for example:
+
+- a Mopeka Wi-Fi gateway, or
+- a Mopeka cellular bridge.
+
+A quick check: if the Tank Check app shows fresh readings for a tank while your phone is
+nowhere near it, that sensor reports to the cloud and will work here.
+
+The integration is developed against Mopeka Pro Check propane sensors. Other Mopeka sensor
+models that report to the same account may work, but they are untested.
 
 ## Requirements
 
-- Home Assistant 2024.1.0 or newer
-- Mopeka account with at least one sensor connected via WiFi gateway
-- Network access to Mopeka Cloud API
+- Home Assistant with [HACS](https://hacs.xyz/) installed.
+- A Mopeka account that signs in with an email address and password. Accounts that use
+  only Sign in with Apple or Google have no password to enter here.
+- At least one sensor reporting to Mopeka Cloud through a gateway.
+- Outbound internet access from Home Assistant to Amazon Cognito (`us-east-1`) and
+  `gateway.mopeka.cloud`.
 
 ## Installation
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=MedVedZot&repository=mopeka-ha&category=integration)
+### HACS (custom repository)
 
-### Via HACS (Recommended)
+1. In Home Assistant, open **HACS**.
+2. Open the menu (three dots, top right) and choose **Custom repositories**.
+3. Enter `https://github.com/gsperry/mopeka-ha`, set the type to **Integration**, and
+   select **Add**.
+4. Search HACS for **Mopeka HA**, open it, and select **Download**.
+5. Restart Home Assistant.
 
-1. Open HACS in Home Assistant
-2. Go to **Integrations**
-3. Click the **three dots menu** → **Custom repositories**
-4. Add this repository: `https://github.com/MedVedZot/mopeka-ha.git`
-5. Select category: **Integration**
-6. Click **Add**
-7. Go to **Integrations** and search for "Mopeka HA"
-8. Click **Install**
-9. Restart Home Assistant
+[![Open this repository in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=gsperry&repository=mopeka-ha&category=integration)
 
-### Manual Installation
+### Manual
 
-1. Copy the `custom_components/mopeka_ha` folder to your Home Assistant `custom_components` directory
-2. Install the required dependency:
-   ```bash
-   pip install mopeka-api==1.0.2
-   ```
-3. Restart Home Assistant
-4. Go to **Settings** → **Devices & Services** → **Add Integration**
-5. Search for "Mopeka HA"
+1. Download the latest release from the
+   [releases page](https://github.com/gsperry/mopeka-ha/releases).
+2. Copy `custom_components/mopeka_ha` into the `custom_components` folder of your Home
+   Assistant configuration directory.
+3. Restart Home Assistant.
 
-## Multiple Accounts
-
-This integration supports adding multiple Mopeka accounts simultaneously. This is useful for:
-
-- Managing sensors at different locations
-- Sharing access between different users
-- Separating business and personal accounts
-
-### Adding Another Account
-
-To add a second (or third) Mopeka account:
-
-1. Go to **Settings** → **Devices & Services**
-2. Click **Add Integration**
-3. Search for "Mopeka HA"
-4. Enter the credentials for the new account
-5. Select sensors for the new account
-6. Click **Submit**
-
-Each account will create separate devices and sensors with their own configuration.
-
-### Managing Multiple Accounts
-
-- Each account is independent with its own settings
-- You can have different sensor selections for each account
-- Each account uses its own update interval
-- Removing one account won't affect others
+Home Assistant installs the integration's Python requirements automatically on first load.
 
 ## Configuration
 
-### Step 1: Add Integration
+All configuration is done in the UI. There is no YAML configuration.
 
-1. After adding the integration, you'll be prompted to enter your Mopeka credentials:
-   - **Email**: Your Mopeka account email
-   - **Password**: Your Mopeka account password
+1. Go to **Settings > Devices & services** and select **Add integration**.
+2. Search for **Mopeka HA**.
+3. Enter the email address and password you use for the Tank Check app.
+4. Choose which measurements to create as entities. The form shows the current value of
+   each one so you can see what your sensors report. Select at least one.
 
-### Step 2: Select Sensors
+Each tank on the account becomes a device, named as it is in the Tank Check app. Each
+selected measurement becomes a sensor entity on that device.
 
-2. The integration will automatically:
-   - Authenticate with Mopeka Cloud API
-   - Discover all sensors available from the API
-   - Show you a list of available sensors to create
+You can add more than one Mopeka account. Each account is a separate integration entry.
 
-3. **Select the sensors you want** (at least one must be selected):
-   - ✅ `fill_percent` - Tank level in percentage
-   - ✅ `temperature_c` - Temperature in Celsius
-   - ✅ `temperature_f` - Temperature in Fahrenheit
-   - ✅ `battery_voltage` - Battery voltage
-   - ✅ `level_cm` - Liquid level in centimeters
-   - ✅ `level_inches` - Liquid level in inches
-   - ✅ `volume_liters` - Volume in liters
-   - ✅ `volume_gallons_us` - Volume in US gallons
-   - ✅ `volume_original_unit` - Original volume unit
-   - ✅ `tank_type` - Tank type (e.g., "500L")
-   - ✅ `tank_height` - Tank height in meters
-   - ✅ `vertical` - Tank orientation (true/false)
-   - ✅ `propaneButaneRatio` - Propane to butane ratio
-   - ✅ `signal_quality` - Signal quality in percentage
-   - ✅ `updated_human_readable` - Last update time
+### Options
 
-4. Click **Submit** to create the integration
+Open the integration entry and select **Configure** to change:
 
-### Step 3: Sensors Created
+| Option | Description | Default |
+|---|---|---|
+| Password | Enter a new password if you changed it in the Tank Check app. Leave blank to keep the current one. | (unchanged) |
+| Update interval | How often to poll Mopeka Cloud, in minutes. | 1 |
+| Measurements | Which measurements to create as entities. Deselecting one removes its entity. | (as chosen during setup) |
 
-The integration will automatically create sensor entities for each selected field on each tank:
+To change the account email, use **Reconfigure** from the integration entry's menu.
 
-**Example entity names** (for a tank named "Main Propane Tank"):
-- `sensor.main_propane_tank_fill_percent`
-- `sensor.main_propane_tank_temperature_c`
-- `sensor.main_propane_tank_battery_voltage`
-- `sensor.main_propane_tank_volume_liters`
+## Entities
 
-## Modifying Sensor Selection
+Entities are created only for the measurements you select. Each is created on every tank
+that reports that measurement.
 
-You can add or remove sensors at any time without reinstalling the integration:
+| Measurement | Unit | Description |
+|---|---|---|
+| `fill_percent` | % | How full the tank is. Calculated by the integration from the liquid level and the tank size and orientation. It can differ slightly from the Tank Check app. |
+| `level_cm` | cm | Liquid level. |
+| `level_inches` | in | Liquid level. |
+| `volume_liters` | L | Estimated liquid volume, based on the tank type set in the app. |
+| `volume_gallons_us` | gal | Estimated liquid volume, based on the tank type set in the app. |
+| `volume_original_unit` | | Unit of the tank capacity set in the app, such as `lb` or `l`. |
+| `tank_type` | | Tank type set in the app, such as `20lb`. |
+| `tank_height` | m | Tank height used for the level calculation. |
+| `vertical` | | `True` for a vertical tank, `False` for a horizontal tank. |
+| `propaneButaneRatio` | | Propane/butane mix set in the app. |
+| `temperature_c` | °C | Temperature at the sensor. |
+| `temperature_f` | °F | Temperature at the sensor. |
+| `battery_voltage` | V | Sensor battery voltage. |
+| `signal_quality` | % | Quality of the sensor's ultrasonic reading. Low values mean the level reading may be unreliable. |
+| `updated_human_readable` | | How long ago the sensor last reported, as text (for example `5 min ago`). |
 
-1. Go to **Settings** → **Devices & Services**
-2. Find **Mopeka HA** integration
-3. Click **Configure** (three dots → Configure)
-4. Select/deselect sensors as needed
-5. Optionally, change the **Update Interval** (in minutes)
-6. Optionally, update your **Mopeka password** if it has changed
-7. Click **Submit**
-8. The integration will automatically add/remove sensor entities
+## Limitations
 
-### Changing Credentials
-
-You can update your Mopeka account credentials at any time:
-
-1. Go to **Settings** → **Devices & Services**
-2. Find **Mopeka HA** integration
-3. Click **Configure** (three dots → Configure)
-4. Enter your new **Email** and **Password**
-5. Click **Submit**
-6. The integration will verify the new credentials and continue working
-
-### Reconfigure Flow
-
-Alternatively, use the Reconfigure option:
-
-1. Go to **Settings** → **Devices & Services**
-2. Find **Mopeka HA** integration
-3. Click **Reconfigure** (three dots → Reconfigure)
-4. Update your email and password
-5. Click **Submit**
-6. The integration will recreate with the same unique ID but new credentials
-
-**Note**: The sensor selection form displays current sensor values from the API (shown in parentheses), helping you identify which sensors to select.
-
-## Available Sensors
-
-### Sensor Types
-
-The integration automatically determines the sensor type based on the field name and value:
-
-- **Temperature Sensors** - For fields containing "temp" (auto-detects °C or °F)
-- **Voltage Sensors** - For fields containing "voltage"
-- **Volume Sensors** - For fields containing "volume", "gallon", or "liter"
-- **Distance Sensors** - For fields containing "level" or "height"
-- **Percentage Sensors** - For fields containing "percent" or values 0-100
-- **Text Sensors** - For other fields (shows as text)
-
-### Device Information
-
-The following fields are used for **device identification** and **metadata** (not created as sensors):
-
-These are technical fields that identify and describe the physical device itself:
-
-**Identification Fields:**
-- `device_id` - Technical device identifier (also used as serial_number)
-- `wifi_gate_id` - WiFi gateway ID (also used as hardware version)
-- `brand` - Sensor brand ("tankcheck", used as manufacturer)
-- `model_number` - Sensor model number (used as device model)
-
-**Device Metadata:**
-- `name` - Device name (displayed in Home Assistant, also used for entity ID prefix)
-- `timestamp_iso` - Last update timestamp in ISO format
-- `history_start_date` - Historical data start date
-- `history_depth_days` - Historical data retention period
-
-**Note**: These fields are automatically populated into the device's information:
-- `serial_number` = `device_id`
-- `hw_version` = `wifi_gate_id`
-- `manufacturer` = `brand`
-- `model` = `model_number`
-
-**Important**: These fields are separate from sensor data fields (like `battery_voltage`, `temperature_c`, etc.) which represent measurements and state data. Device identification fields are used to uniquely identify and describe the physical sensor device itself.
-
-### Entity Naming
-
-Sensor entities use a hierarchical naming scheme for better organization:
-
-**Device Name + Sensor Type**
-
-The integration uses `has_entity_name = True`, which means:
-
-- **Device name** = Name you give your tank in the Mopeka app (e.g., "Gas Tank")
-- **Sensor name** = Automatically formatted from the sensor key (e.g., "Battery Voltage")
-- **Entity name** = Combined: "Gas Tank Battery Voltage"
-
-**Examples:**
-
-| Device Name | Sensor Key | Entity Name | Entity ID |
-|-------------|-------------|--------------|------------|
-| Gas Tank | `battery_voltage` | Gas Tank Battery Voltage | `sensor.gas_tank_battery_voltage` |
-| Propane Tank | `fill_percent` | Propane Tank Fill Percent | `sensor.propanetank_fill_percent` |
-| BBQ Grill | `temperature_c` | BBQ Grill Temperature C | `sensor.bbqgrill_temperature_c` |
-
-**Key Benefits:**
-- Easy to identify which sensor belongs to which tank
-- Consistent naming across all entities
-- Automatic formatting of sensor names (camelCase → readable text)
-- Entity ID uses `slugify()` for safe identifiers
+- **Unofficial API.** See the note at the top. Changes on Mopeka's side can break the
+  integration until it is updated.
+- **Cloud dependency.** If Mopeka Cloud or your internet connection is down, entities
+  become unavailable. Nothing is read locally.
+- **Polling.** The integration asks the cloud for new data on a fixed interval. A new
+  value appears in Home Assistant only after the gateway has uploaded it *and* the next
+  poll has run, so readings can lag behind the sensor. Gateways upload on their own
+  schedule, and a cellular bridge may upload less often than a Wi-Fi gateway.
+- **Calculated values.** Fill percentage and volume are calculated by the integration,
+  not reported by Mopeka, and depend on the tank settings in the app being correct.
+- **Bluetooth duplicates.** A sensor that is in your cloud account *and* in Bluetooth range
+  of Home Assistant appears twice: once from this integration and once from the built-in
+  Mopeka integration.
 
 ## Troubleshooting
 
-### Integration Not Connecting
+### Turn on debug logging
 
-1. Verify your Mopeka credentials are correct
-2. Ensure your sensors are connected via WiFi gateway (not just Bluetooth)
-3. Check network connectivity to Mopeka Cloud API
-4. Review Home Assistant logs for error messages
+Debug logs are the first thing to collect for any problem.
 
-### No Sensors Found
+1. Go to **Settings > Devices & services > Mopeka HA**.
+2. Select **Enable debug logging** from the menu (three dots).
+3. Reproduce the problem.
+4. Select **Disable debug logging**. Home Assistant downloads the log file.
 
-- Make sure you have at least one Mopeka sensor linked to your account
-- Verify your sensors are connected via WiFi gateway
-- Check that your sensors are configured in the Mopeka app
+To log from Home Assistant startup instead, add this to `configuration.yaml` and restart:
 
-### Data Not Updating
-
-- Default update interval is 1 minute
-- Check Home Assistant logs for API errors
-- Verify your Mopeka account is active
-
-### Sensor Not Created
-
-- Ensure the sensor field was selected during configuration
-- Check that the field exists in the API response for your device
-- Review Home Assistant logs for errors
-
-### Entity ID Not Updated After Renaming
-
-If you rename a device in the Mopeka app but the entity ID doesn't change:
-
-- **Normal behavior**: Entity ID updates occur during integration reload
-- **Conflict detected**: If the new entity ID is already used, the update is skipped
-- **Empty name**: If the device name contains only special characters, no prefix is added (e.g., `sensor.battery`)
-- Check Home Assistant logs for debug messages about entity ID updates
-
-### Integration Shows "Cannot Connect"
-
-This error typically indicates:
-
-- Incorrect Mopeka credentials
-- Network connectivity issues to Mopeka Cloud API
-- Your sensors are not connected via WiFi gateway (Bluetooth-only sensors won't work)
-- Mopeka API service is temporarily unavailable
-
-### Errors in Home Assistant Logs
-
-Look for these specific error messages:
-
-- `"API Error: ..."` - General API communication issue
-- `"invalid_auth"` - Wrong username or password
-- `"cannot_connect"` - Network or API connectivity issue
-- `"no_sensors_selected"` - Must select at least one sensor
-
-## Advanced Configuration
-
-### Update Interval
-
-The update interval can be changed in two ways:
-
-**Via UI (Recommended):**
-1. Go to **Settings** → **Devices & Services**
-2. Find **Mopeka HA** integration
-3. Click **Configure** (three dots → Configure)
-4. Change the **Update Interval** value (in minutes)
-5. Click **Submit**
-
-**Via Code:**
-To change the default interval, modify `custom_components/mopeka_ha/__init__.py`:
-
-```python
-DEFAULT_INTERVAL = 1  # Change this value (in minutes)
+```yaml
+logger:
+  logs:
+    custom_components.mopeka_ha: debug
 ```
 
-### API Configuration
+Remove your email address from logs before sharing them.
 
-The integration uses hardcoded Mopeka API credentials. These are configured automatically and should not need modification.
+### "Failed to connect" when adding the integration
 
-## Dynamic Sensor System
+- Confirm that you can sign in to the Tank Check app with the same email and password.
+- Confirm that Home Assistant has internet access.
+- **Known issue:** in the current release this message appears for *any* failure while
+  signing in or fetching data, including a wrong password, and the cause is not logged.
+  Better error reporting is in progress.
 
-This integration uses a dynamic sensor system that automatically adapts to changes in the Mopeka API:
+### "Invalid email or password"
 
-- **New fields** in API → automatically appear in sensor selection
-- **Removed fields** in API → automatically removed from options
-- **No hardcoding** → all sensors discovered from actual API data
-- **User control** → you choose which sensors to create
+Mopeka rejected the credentials. Check them in the Tank Check app. If you recently reset
+your password, enter the new one under **Configure**.
 
-### Entity ID Management
+### A tank is missing
 
-The integration automatically manages entity IDs when device names change:
+- Check that the tank appears in the Tank Check app and shows recent readings.
+- Tanks that have never uploaded a reading to the cloud are skipped.
+- Entities are created only for measurements you selected. Open **Configure** to add more.
 
-- **Automatic updates**: If you rename a device in the Mopeka app, entity IDs are automatically updated
-  - Example: `sensor.gas_tank_battery` → `sensor.propane_tank_battery`
-- **Safe identifiers**: Uses `slugify()` to create valid entity IDs
-- **Conflict handling**: Automatically skips updates if the new entity ID is already registered
-- **Graceful fallback**: If an error occurs during entity ID update, it's logged without breaking the integration
+### Values are not updating
 
-### Sensor Lifecycle
+- Compare the `updated_human_readable` value with the app. If the app is also out of
+  date, the gateway is not uploading. Check the gateway's power and connection.
+- Check the Home Assistant log for errors from `custom_components.mopeka_ha`.
 
-- **Removal**: When you deselect a sensor in options, the corresponding entity is automatically removed from Home Assistant
-- **Preservation**: Selected sensors maintain their data and configuration even when other sensors are added/removed
+### Reporting a bug
 
-This ensures the integration stays compatible with future Mopeka API updates without code changes.
+Open an [issue](https://github.com/gsperry/mopeka-ha/issues) and include your Home
+Assistant version, the integration version, your sensor and gateway models, and a debug
+log with personal details removed.
 
-## Technical Details
+## Data and privacy
 
-### Integration Type
+Your Mopeka email and password are stored in Home Assistant's configuration storage, like
+any other integration's credentials. They are sent only to Amazon Cognito, which Mopeka
+uses for sign-in. Sensor data is requested only from `gateway.mopeka.cloud`. The
+integration sends no data anywhere else.
 
-- **Type**: Hub-based integration (`integration_type: "hub"`)
-- **IoT Class**: Cloud Polling (`iot_class: "cloud_polling"`)
-- **API Region**: AWS us-east-1
-- **API Timeout**: 20 seconds
+## Removal
 
-### Performance Characteristics
-
-- **Default Update Interval**: 1 minute (60 seconds)
-- **Minimum Interval**: 1 minute
-- **Recommended Interval**: 1-5 minutes depending on your needs
-- **Connection Timeout**: 20 seconds
-- **API Calls**: One call per account per interval
-
-### Dependencies
-
-- **mopeka-api**: 1.0.2 (Python library for Mopeka Cloud API)
-- **Home Assistant**: 2024.1.0 or newer
-
-## Architecture
-
-### Component Structure
-
-```
-custom_components/mopeka_ha/
-├── __init__.py          # Main integration setup and coordinator
-├── config_flow.py        # Configuration UI flow
-├── sensor.py            # Sensor entity definitions
-├── manifest.json         # Integration metadata
-└── translations/         # Localization strings
-```
-
-### Data Flow
-
-```
-┌─────────────────┐
-│   User Input    │  Credentials, sensor selection
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Config Flow    │  Validates credentials, discovers sensors
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   Coordinator   │  Polls Mopeka API periodically
-│  (Polling)      │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Mopeka Cloud   │  Returns sensor data
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   Sensors       │  Display data in Home Assistant
-│  (Entities)     │
-└─────────────────┘
-```
-
-### Key Patterns
-
-**Coordinator Pattern:**
-- Centralized data fetching from Mopeka API
-- Automatic retry logic with error handling
-- Configurable update interval
-- State management for all sensors
-
-**Entity Management:**
-- Dynamic sensor creation based on API data
-- Automatic entity ID updates on device rename
-- Graceful cleanup of deselected sensors
-- Conflict detection and resolution
-
-**Device Registry:**
-- Automatic device creation for each sensor
-- Device name synchronization with Mopeka API
-- Manufacturer, model, and serial number mapping
-
-### State Management
-
-1. **Initialization**: Config flow authenticates and discovers sensors
-2. **Setup**: Coordinator starts periodic polling (default: 1 minute)
-3. **Updates**: All sensors refresh simultaneously on coordinator update
-4. **Changes**: Device renames trigger entity ID updates
-5. **Cleanup**: Deselected sensors are removed automatically
-
-## Development
-
-This integration uses the [mopeka-api](https://github.com/MedVedZot/mopeka-api) Python library to communicate with the Mopeka Cloud.
+1. Go to **Settings > Devices & services > Mopeka HA**.
+2. For each entry, open the menu (three dots) and select **Delete**.
+3. To remove the files as well, uninstall **Mopeka HA** in HACS and restart Home
+   Assistant.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Bug reports and pull requests are welcome. Please open an issue to discuss larger changes
+before starting work.
 
-## Disclaimer
+## Credits and license
 
-This project is not affiliated with or endorsed by Mopeka IoT. Use it with your own Mopeka account and devices only.
+This project is a fork of [MedVedZot/mopeka-ha](https://github.com/MedVedZot/mopeka-ha)
+by Aleksandr Zhuravlev. See [CREDITS.md](CREDITS.md) for details.
 
-## License
+Released under the [MIT License](LICENSE).
 
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Support
-
-- 📋 [Issues](https://github.com/MedVedZot/mopeka-ha/issues)
-- 💬 [Discussions](https://github.com/MedVedZot/mopeka-ha/discussions)
-- ☕ [Buy me a coffee](https://buymeacoffee.com/MedVedZot)
+Mopeka, Pro Check, and Tank Check are trademarks of their respective owners. This project
+is not affiliated with, endorsed by, or supported by Mopeka.

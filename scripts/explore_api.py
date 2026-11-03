@@ -5,18 +5,13 @@
 # ///
 """Check how Mopeka's current cloud platform serves data to your account.
 
-One-off research tool. Signs in to Mopeka's current Cognito user pool with the
-integration's SRP code, then:
-
-1. prints the account's role and Cognito groups, from your own user profile
-   and token claims (not the tokens themselves);
-2. checks whether the older data gateway, gateway.mopeka.cloud, accepts the
-   current pool's access or ID token, and if so prints the shape of the device
-   list and one reading.
+One-off research tool. Signs in to Mopeka's current Cognito user pool as the
+Co-Pilot app does (same app client ID), then calls the read-only device routes
+on dev.mopeka.cloud and prints the shape of each response.
 
 Output has personal data removed: strings become "<str len N>" except a short
-allowlist of harmless values; MAC addresses, emails, coordinates, phone numbers,
-and postcodes are blanked; numbers (including numeric strings) are kept.
+allowlist of harmless values; MAC addresses, emails, names, coordinates, phone
+numbers, and postcodes are blanked; numbers (including numeric strings) are kept.
 
 Credentials come from MOPEKA_EMAIL and MOPEKA_PASSWORD, or a .env file in the
 repository root. Review the output before sharing it.
@@ -37,7 +32,6 @@ import json
 import os
 import re
 import sys
-import time
 import types
 from pathlib import Path
 from typing import Any
@@ -49,13 +43,20 @@ _package = types.ModuleType("mopeka_cloud")
 _package.__path__ = [str(ROOT / "custom_components" / "mopeka_ha")]
 sys.modules["mopeka_cloud"] = _package
 api = importlib.import_module("mopeka_cloud.api")
-const = importlib.import_module("mopeka_cloud.const")
 
-# Mopeka's current user pool and web client, from the public config of
-# www.mopeka.cloud.
+# Mopeka's current user pool (from the public config of www.mopeka.cloud) and
+# the Co-Pilot app's client ID (from a capture of the app signing in).
 api.COGNITO_USER_POOL_ID = "us-east-1_CdV73bmzB"
-api.COGNITO_CLIENT_ID = "3laqnk4f8p1i29895clng4jh5g"
+api.COGNITO_CLIENT_ID = "5dbn0o9pcqli659c1t3ptjpqmt"
 PORTAL = "https://dev.mopeka.cloud"
+ACCOUNT_ROUTES = ("/api/devices", "/api/devices/list", "/api/devices/names")
+DEVICE_ROUTES = (
+    "/api/devices/{org}/{device}",
+    "/api/devices/{org}/{device}/shadow",
+    "/api/devices/getShadowFromMac?mac={mac}",
+    "/api/devices/{org}/{device}/samples?limit=2&attributesToGet=t,r,q,v,c,s&qualityType=1",
+)
+MAX_DEVICES = 2
 
 _KEEP_STRING_KEYS = re.compile(
     r"(unit|units|abbreviation|style|model|modelNumber|type|tankType|kind|status|"
@@ -117,6 +118,24 @@ async def get(
             return resp.status, f"<non-JSON, {len(text)} characters>"
 
 
+def device_list(payload: Any) -> list[dict[str, Any]]:
+    """Return device objects from a device-route response."""
+    if isinstance(payload, list):
+        return [d for d in payload if isinstance(d, dict)]
+    if isinstance(payload, dict):
+        for key in ("devices", "items", "data", "results", "rows"):
+            if isinstance(payload.get(key), list):
+                return [d for d in payload[key] if isinstance(d, dict)]
+    return []
+
+
+def first(obj: dict[str, Any], *names: str) -> Any:
+    for name in names:
+        if obj.get(name) not in (None, ""):
+            return obj[name]
+    return None
+
+
 async def main() -> int:
     env_file = ROOT / ".env"
     if env_file.exists():
@@ -135,62 +154,52 @@ async def main() -> int:
         try:
             await client.authenticate()
         except api.MopekaError as err:
-            print(f"Sign-in to the current pool FAILED: {type(err).__name__}: {err}")
+            print(
+                f"Sign-in with the Co-Pilot client FAILED: {type(err).__name__}: {err}"
+            )
             return 1
         tokens = client._tokens
-        print("Signed in to the current Mopeka user pool.\n")
-
-        # 1. Role and groups.
-        access, ident = claims(tokens.access_token), claims(tokens.id_token)
-        print("Access token claim names:", sorted(access))
-        print("ID token claim names:", sorted(ident))
+        print("Signed in with the Co-Pilot app client.")
         print(
-            "cognito:groups:", access.get("cognito:groups", ident.get("cognito:groups"))
+            "Access token client_id matches:",
+            claims(tokens.access_token).get("client_id") == api.COGNITO_CLIENT_ID,
+            "\n",
         )
-        custom = {k: v for k, v in ident.items() if k.startswith("custom:")}
-        print("ID token custom claims:", shape(custom))
-        username = access.get("username") or ident.get("cognito:username")
-        if username:
-            status, body = await get(
-                session,
-                f"{PORTAL}/api/users/{username}",
-                {"token": tokens.access_token},
-            )
-            show("GET portal /api/users/{username}", status, body)
 
-        # 2. The older gateway with the current pool's tokens.
-        print()
-        working: str | None = None
+        headers = {"token": tokens.access_token, "Accept": "application/json"}
         devices: list[dict[str, Any]] = []
-        for kind in ("access", "id"):
-            headers = {**const.GATEWAY_HEADERS, "Auth": tokens.get(kind)}
-            status, body = await get(
-                session, const.GATEWAY_URL, headers, _=str(int(time.time() * 1000))
-            )
-            show(f"GET gateway /app/sensors with the {kind} token", status, body)
-            if status == 200 and isinstance(body, dict):
-                working = kind
-                devices = [d for d in body.get("devices", []) if isinstance(d, dict)]
-                break
+        for path in ACCOUNT_ROUTES:
+            status, body = await get(session, PORTAL + path, headers)
+            show(f"GET {path}", status, body)
+            devices = devices or device_list(body)
 
-        if working is None:
-            print("\nThe older gateway does not accept the current pool's tokens.")
-            return 0
-        headers = {**const.GATEWAY_HEADERS, "Auth": tokens.get(working)}
-        for index, device in enumerate(devices[:2], start=1):
-            address = device.get("address")
-            if not isinstance(address, str):
-                continue
+        if not devices:
+            print("\nNo device list. Trying the ID token in the same header once:")
             status, body = await get(
                 session,
-                f"{const.GATEWAY_URL}/{address}/data-shadow",
-                headers,
-                limit="1",
-                shadowLimit="1",
+                PORTAL + "/api/devices",
+                {"token": tokens.id_token, "Accept": "application/json"},
             )
-            show(
-                f"GET gateway /app/sensors/{{device {index}}}/data-shadow", status, body
+            show("GET /api/devices (ID token)", status, body)
+            return 0
+
+        for index, device in enumerate(devices[:MAX_DEVICES], start=1):
+            ids = {
+                "org": first(device, "organizationId", "orgId"),
+                "device": first(device, "id", "deviceId"),
+                "mac": first(device, "fullMac", "mac"),
+            }
+            print(
+                f"\n--- device {index}: has {[k for k, v in ids.items() if v is not None]}"
             )
+            for template in DEVICE_ROUTES:
+                needed = re.findall(r"{(\w+)}", template)
+                if any(ids.get(n) is None for n in needed):
+                    continue
+                status, body = await get(
+                    session, PORTAL + template.format(**ids), headers
+                )
+                show(f"GET {template}", status, body)
     return 0
 
 

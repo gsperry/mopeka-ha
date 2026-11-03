@@ -94,7 +94,7 @@ class MopekaSensor(CoordinatorEntity[MopekaCoordinator], SensorEntity):
         device = coordinator.data.tanks[address].device
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, address)},
-            name=device.name,
+            name=device.display_name,
             manufacturer="Mopeka",
             model=device.model_number,
             serial_number=address,

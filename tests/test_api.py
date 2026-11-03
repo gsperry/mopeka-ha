@@ -104,10 +104,15 @@ async def test_wrong_password(hass: HomeAssistant, fake_cloud: FakeCloud) -> Non
 
 
 async def test_unknown_user(hass: HomeAssistant, fake_cloud: FakeCloud) -> None:
-    """An unknown lower-case email is tried once and rejected."""
+    """An email neither platform knows is rejected as a bad sign-in.
+
+    The current platform hides whether accounts exist, so its "incorrect
+    username or password" is reported. Each platform is tried once.
+    """
     with pytest.raises(MopekaAuthError) as err:
         await _client(hass, email="nobody@example.com").authenticate()
-    assert err.value.code == "UserNotFoundException"
+    assert err.value.code == "NotAuthorizedException"
+    assert fake_cloud.current.count("RespondToAuthChallenge") == 1
     assert fake_cloud.cognito.count("InitiateAuth") == 1
 
 

@@ -1,7 +1,8 @@
 # Mopeka HA
 
 A Home Assistant custom integration that reads Mopeka tank sensors from Mopeka Cloud, the
-same service the Tank Check mobile app uses.
+same service Mopeka's mobile apps use. It works with accounts from the **Mopeka Co-Pilot**
+app and from the older **Tank Check** app, and detects which one you have.
 
 Use it for sensors that report through a Mopeka gateway and are out of Bluetooth range of
 your Home Assistant host. For sensors within Bluetooth range, use Home Assistant's built-in
@@ -29,25 +30,27 @@ local, faster, and does not depend on a cloud service.
 ## Supported hardware
 
 The integration reads whatever your Mopeka account has in the cloud. A sensor is supported
-when a Mopeka gateway uploads its readings, for example:
+when its readings reach Mopeka Cloud, for example through:
 
-- a Mopeka Wi-Fi gateway, or
-- a Mopeka cellular bridge.
+- a Mopeka cellular bridge or Wi-Fi gateway, or
+- the Co-Pilot app, which uploads readings from sensors near your phone.
 
-A quick check: if the Tank Check app shows fresh readings for a tank while your phone is
-nowhere near it, that sensor reports to the cloud and will work here.
+A quick check: if the Mopeka app shows fresh readings for a tank while your phone is nowhere
+near it, that sensor reports to the cloud and will work here.
 
-The integration is developed against Mopeka Pro Check propane sensors. Other Mopeka sensor
-models that report to the same account may work, but they are untested.
+The integration is developed against Mopeka Pro Check propane sensors. Level readings are
+converted using propane's speed of sound, so other liquids will read incorrectly. Other
+Mopeka sensor models that report to the same account may work, but they are untested.
 
 ## Requirements
 
 - Home Assistant with [HACS](https://hacs.xyz/) installed.
-- A Mopeka account that signs in with an email address and password. Accounts that use
-  only Sign in with Apple or Google have no password to enter here.
+- A Mopeka Co-Pilot or Tank Check account that signs in with an email address and
+  password. Accounts that use only Sign in with Apple or Google have no password to enter
+  here.
 - At least one sensor reporting to Mopeka Cloud through a gateway.
-- Outbound internet access from Home Assistant to Amazon Cognito (`us-east-1`) and
-  `gateway.mopeka.cloud`.
+- Outbound internet access from Home Assistant to Amazon Cognito (`us-east-1`) and to
+  `dev.mopeka.cloud` (Co-Pilot accounts) or `gateway.mopeka.cloud` (Tank Check accounts).
 
 ## Installation
 
@@ -78,12 +81,15 @@ All configuration is done in the UI. There is no YAML configuration.
 
 1. Go to **Settings > Devices & services** and select **Add integration**.
 2. Search for **Mopeka HA**.
-3. Enter the email address and password you use for the Tank Check app.
+3. Enter the email address and password you use for the Mopeka app.
 4. Choose which measurements to create as entities. The form shows the current value of
    each one so you can see what your sensors report. Select at least one.
 
-Each tank on the account becomes a device, named as it is in the Tank Check app. Each
-selected measurement becomes a sensor entity on that device.
+Each tank on the account becomes a device. Tank Check accounts use the names from the app.
+Co-Pilot keeps tank names on your phone rather than in the cloud, so those tanks are named
+`Mopeka` plus the last four characters of the sensor's address, such as `Mopeka 6F01`.
+Rename them in Home Assistant if you like. Each selected measurement becomes a sensor entity
+on that device.
 
 You can add more than one Mopeka account. Each account is a separate integration entry.
 
@@ -108,11 +114,15 @@ Open the integration entry and select **Configure** to change:
 ## Entities
 
 Entities are created only for the measurements you select. Each is created on every tank
-that reports that measurement.
+that reports that measurement, and setup only offers measurements your tanks report.
+
+For **Co-Pilot accounts**, Mopeka Cloud stores the readings but not the tank settings, so
+level, temperature, battery voltage, and last update are available. Fill percentage,
+volume, and tank details need the tank's size, which the cloud does not provide.
 
 | Measurement | Unit | Description |
 |---|---|---|
-| `fill_percent` | % | How full the tank is. Calculated by the integration from the liquid level and the tank size and orientation. It can differ slightly from the Tank Check app. |
+| `fill_percent` | % | How full the tank is. Calculated by the integration from the liquid level and the tank size and orientation. Tank Check accounts only. |
 | `level_cm` | cm | Liquid level. |
 | `level_inches` | in | Liquid level. |
 | `volume_liters` | L | Estimated liquid volume, based on the tank type set in the app. |
@@ -138,8 +148,9 @@ that reports that measurement.
   value appears in Home Assistant only after the gateway has uploaded it *and* the next
   poll has run, so readings can lag behind the sensor. Gateways upload on their own
   schedule, and a cellular bridge may upload less often than a Wi-Fi gateway.
-- **Calculated values.** Fill percentage and volume are calculated by the integration,
-  not reported by Mopeka, and depend on the tank settings in the app being correct.
+- **Calculated values.** Level is calculated from the sensor's raw echo time. Fill
+  percentage and volume are calculated from the level and, for Tank Check accounts, the
+  tank settings in the app.
 - **Bluetooth duplicates.** A sensor that is in your cloud account *and* in Bluetooth range
   of Home Assistant appears twice: once from this integration and once from the built-in
   Mopeka integration. Use the **Tanks to leave out** option to drop it from this one.
@@ -219,8 +230,10 @@ log with personal details removed.
 
 Your Mopeka email and password are stored in Home Assistant's configuration storage, like
 any other integration's credentials. They are sent only to Amazon Cognito, which Mopeka
-uses for sign-in. Sensor data is requested only from `gateway.mopeka.cloud`. The
-integration sends no data anywhere else.
+uses for sign-in. Sensor data is requested only from Mopeka Cloud (`dev.mopeka.cloud` or
+`gateway.mopeka.cloud`). Requests to Mopeka Cloud identify themselves as Mopeka's apps,
+because the service is built for them. The integration only reads data: it never changes
+devices or settings on your account, and sends no data anywhere else.
 
 ## Removal
 

@@ -37,6 +37,7 @@ from .api import (
     MopekaConnectionError,
 )
 from .const import (
+    CONF_BACKEND,
     CONF_EXCLUDED_DEVICES,
     CONF_SENSORS,
     CONF_UPDATE_INTERVAL,
@@ -58,25 +59,38 @@ _PASSWORD_SELECTOR = TextSelector(
 )
 
 
-def _sensor_choices(tanks: Iterable[MopekaTank]) -> list[SelectOptionDict]:
-    """Return one choice per measurement, labelled with a current sample value."""
+def _sensor_choices(
+    tanks: Iterable[MopekaTank], selected: Iterable[str] = ()
+) -> list[SelectOptionDict]:
+    """Return a choice per measurement the tanks report, with a sample value.
+
+    Measurements no tank reports are left out, unless already selected. With no
+    tank data at all, every measurement is offered.
+    """
     samples: dict[str, Any] = {}
     for tank in tanks:
         for key, value in tank.values().items():
             if value is not None:
                 samples.setdefault(key, value)
+    keys = (
+        [k for k in MEASUREMENT_KEYS if k in samples or k in set(selected)]
+        if samples
+        else list(MEASUREMENT_KEYS)
+    )
     return [
         SelectOptionDict(
             value=key, label=f"{key} ({samples[key]})" if key in samples else key
         )
-        for key in sorted(MEASUREMENT_KEYS)
+        for key in sorted(keys)
     ]
 
 
-def _sensor_selector(tanks: Iterable[MopekaTank]) -> SelectSelector:
+def _sensor_selector(
+    tanks: Iterable[MopekaTank], selected: Iterable[str] = ()
+) -> SelectSelector:
     return SelectSelector(
         SelectSelectorConfig(
-            options=_sensor_choices(tanks),
+            options=_sensor_choices(tanks, selected),
             multiple=True,
             mode=SelectSelectorMode.LIST,
         )
@@ -85,9 +99,16 @@ def _sensor_selector(tanks: Iterable[MopekaTank]) -> SelectSelector:
 
 async def _validate(
     flow: ConfigFlow | OptionsFlow, email: str, password: str
-) -> tuple[MopekaAccountData | None, dict[str, str]]:
+) -> tuple[MopekaApiClient, MopekaAccountData | None, dict[str, str]]:
     """Sign in and read the account, returning the data or a form error."""
     client = MopekaApiClient(async_get_clientsession(flow.hass), email, password)
+    data, errors = await _read_account(client)
+    return client, data, errors
+
+
+async def _read_account(
+    client: MopekaApiClient,
+) -> tuple[MopekaAccountData | None, dict[str, str]]:
     try:
         data = await client.get_account_data()
     except MopekaAuthError as err:
@@ -103,7 +124,8 @@ async def _validate(
         _LOGGER.exception("Unexpected error while checking the Mopeka account")
         return None, {"base": "unknown"}
     _LOGGER.debug(
-        "Mopeka account has %d device(s), %d with cloud readings",
+        "Mopeka account on the %s platform has %d device(s), %d with readings",
+        client.backend,
         len(data.devices),
         len(data.tanks),
     )
@@ -135,11 +157,14 @@ class MopekaConfigFlow(ConfigFlow, domain=DOMAIN):
             email = user_input[CONF_EMAIL].strip()
             await self.async_set_unique_id(email.lower())
             self._abort_if_unique_id_configured()
-            data, errors = await _validate(self, email, user_input[CONF_PASSWORD])
+            client, data, errors = await _validate(
+                self, email, user_input[CONF_PASSWORD]
+            )
             if data is not None:
                 self._credentials = {
                     CONF_EMAIL: email,
                     CONF_PASSWORD: user_input[CONF_PASSWORD],
+                    CONF_BACKEND: str(client.backend),
                 }
                 self._account_data = data
                 return await self.async_step_sensors()
@@ -197,12 +222,16 @@ class MopekaConfigFlow(ConfigFlow, domain=DOMAIN):
         entry = self._get_reauth_entry()
         errors: dict[str, str] = {}
         if user_input is not None:
-            data, errors = await _validate(
+            client, data, errors = await _validate(
                 self, entry.data[CONF_EMAIL], user_input[CONF_PASSWORD]
             )
             if data is not None:
                 return self.async_update_reload_and_abort(
-                    entry, data_updates={CONF_PASSWORD: user_input[CONF_PASSWORD]}
+                    entry,
+                    data_updates={
+                        CONF_PASSWORD: user_input[CONF_PASSWORD],
+                        CONF_BACKEND: str(client.backend),
+                    },
                 )
 
         return self.async_show_form(
@@ -222,13 +251,16 @@ class MopekaConfigFlow(ConfigFlow, domain=DOMAIN):
             email = user_input[CONF_EMAIL].strip()
             await self.async_set_unique_id(email.lower())
             self._abort_if_unique_id_mismatch(reason="wrong_account")
-            data, errors = await _validate(self, email, user_input[CONF_PASSWORD])
+            client, data, errors = await _validate(
+                self, email, user_input[CONF_PASSWORD]
+            )
             if data is not None:
                 return self.async_update_reload_and_abort(
                     entry,
                     data_updates={
                         CONF_EMAIL: email,
                         CONF_PASSWORD: user_input[CONF_PASSWORD],
+                        CONF_BACKEND: str(client.backend),
                     },
                 )
 
@@ -277,9 +309,9 @@ class MopekaOptionsFlow(OptionsFlow):
         )
         excluded: list[str] = list(entry.options.get(CONF_EXCLUDED_DEVICES, []))
         device_choices = [
-            SelectOptionDict(value=address, label=device.name or address)
+            SelectOptionDict(value=address, label=device.display_name)
             for address, device in sorted(
-                account.devices.items(), key=lambda item: item[1].name or item[0]
+                account.devices.items(), key=lambda item: item[1].display_name
             )
         ]
         # Keep exclusions for devices that are no longer on the account.
@@ -312,7 +344,9 @@ class MopekaOptionsFlow(OptionsFlow):
                 ),
                 vol.Required(
                     CONF_SENSORS, default=list(entry.options.get(CONF_SENSORS, []))
-                ): _sensor_selector(account.tanks.values()),
+                ): _sensor_selector(
+                    account.tanks.values(), entry.options.get(CONF_SENSORS, [])
+                ),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

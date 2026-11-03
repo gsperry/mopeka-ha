@@ -72,6 +72,8 @@ KNOWN_READING_KEYS = {
     "Source",
     "ttl",
 }
+# Retail sync sample keys: time, battery, quality, raw level, temperature.
+KNOWN_SAMPLE_KEYS = {"t", "v", "q", "r", "c"}
 
 
 def load_env() -> tuple[str, str]:
@@ -164,6 +166,53 @@ class Anonymizer:
         return text + "\n"
 
 
+def _anonymize_sample(anon: Anonymizer, sample: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in sample.items():
+        if key == "m" and isinstance(value, str):
+            result[key] = anon.address(value)
+        elif key in KNOWN_SAMPLE_KEYS:
+            result[key] = value
+        else:
+            anon.unknown_keys["reading"].add(key)
+            result[key] = placeholder(value)
+    return result
+
+
+async def record_retail(client: Any, email: str, directory: Path) -> None:
+    """Write an anonymized retail sync response."""
+    anon = Anonymizer(email)
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = await client._retail_sync()
+    payload = payload if isinstance(payload, dict) else {}
+    devices = []
+    for raw in payload.get("devices", []):
+        if not isinstance(raw, dict):
+            continue
+        device: dict[str, Any] = {}
+        for key, value in raw.items():
+            if key == "mac" and isinstance(value, str):
+                device[key] = anon.address(value)
+            elif key == "updatedAt":
+                device[key] = value
+            elif key == "samples" and isinstance(value, list):
+                device[key] = [
+                    _anonymize_sample(anon, s) for s in value if isinstance(s, dict)
+                ]
+            else:
+                anon.unknown_keys["device"].add(key)
+                device[key] = placeholder(value)
+        devices.append(device)
+    top = {k: placeholder(v) for k, v in payload.items() if k != "devices"}
+    top["devices"] = devices
+    (directory / "retail_sync.json").write_text(anon.text(top), encoding="utf-8")
+    print(f"\nRecorded an anonymized retail sync response in {directory}/")
+    for kind, keys in anon.unknown_keys.items():
+        if keys:
+            print(f"  Unrecognized {kind} fields (values replaced): {sorted(keys)}")
+    print("  Review the file before committing it.")
+
+
 async def record(client: Any, email: str, directory: Path) -> None:
     """Write anonymized device-list and data-shadow responses."""
     anon = Anonymizer(email)
@@ -220,7 +269,7 @@ async def main() -> int:
             return 1
 
         anon = Anonymizer(email)
-        print(f"Signed in. Gateway token type: {client._token_kind}")
+        print(f"Signed in. Platform: {client.backend}")
         print(
             f"{len(data.devices)} device(s), {len(data.tanks)} with a cloud reading\n"
         )
@@ -248,7 +297,10 @@ async def main() -> int:
             )
 
         if args.record:
-            await record(client, email, args.record)
+            if client.backend == "retail":
+                await record_retail(client, email, args.record)
+            else:
+                await record(client, email, args.record)
     return 0
 
 

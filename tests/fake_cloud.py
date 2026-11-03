@@ -1,10 +1,13 @@
-"""In-memory fakes of Amazon Cognito and the Mopeka gateway.
+"""In-memory fakes of Amazon Cognito and both Mopeka platforms.
 
-FakeCognito implements the server side of Cognito's SRP sign-in, so a client
-only gets tokens if it computes a correct password proof. FakeGateway accepts
-only tokens FakeCognito issued and has not expired or revoked.
+FakeCognito implements the server side of Cognito's SRP sign-in for one user
+pool, so a client only gets tokens if it computes a correct password proof.
+There is one per platform: the current pool hides whether an account exists,
+as the real one does. FakeRetail serves the current platform's retail sync
+route and FakeGateway the older platform's gateway; each accepts only tokens
+its own pool issued and has not expired or revoked.
 
-Both plug into Home Assistant's ``aioclient_mock``; no network is used.
+All of them plug into Home Assistant's ``aioclient_mock``; no network is used.
 """
 
 from __future__ import annotations
@@ -38,16 +41,18 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import (
 from yarl import URL
 
 from custom_components.mopeka_ha.const import (
-    COGNITO_CLIENT_ID,
     COGNITO_URL,
-    COGNITO_USER_POOL_ID,
+    CURRENT_POOL,
+    EMPTY_RETAIL_SYNC,
     GATEWAY_URL,
+    LEGACY_POOL,
+    RETAIL_SYNC_URL,
+    CognitoPool,
 )
 
 _BIG_N = hex_to_long(N_HEX)
 _G = hex_to_long(G_HEX)
 _K = hex_to_long(hex_hash("00" + N_HEX + "0" + G_HEX))
-_POOL_NAME = COGNITO_USER_POOL_ID.split("_")[1]
 _TIMESTAMP_RE = re.compile(
     r"^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) "
     r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) "
@@ -77,20 +82,22 @@ class FakeUser:
 
     email: str
     password: str
+    pool_name: str
     user_id: str = field(default_factory=lambda: f"uid-{secrets.token_hex(8)}")
     salt: str = field(default_factory=lambda: secrets.token_hex(16))
 
     @property
     def verifier(self) -> int:
         """Return v = g^x mod N for this user's password."""
-        inner = hash_sha256(f"{_POOL_NAME}{self.user_id}:{self.password}".encode())
+        secret = f"{self.pool_name}{self.user_id}:{self.password}"
+        inner = hash_sha256(secret.encode())
         x = hex_to_long(hex_hash(pad_hex(self.salt) + inner))
         return pow(_G, x, _BIG_N)
 
 
 @dataclass
 class _PendingChallenge:
-    user: FakeUser
+    user: FakeUser | None  # None for a decoy challenge to an unknown user
     srp_a: int
     small_b: int
     srp_b: int
@@ -100,9 +107,20 @@ class _PendingChallenge:
 class FakeCognito:
     """Fake Cognito Identity Provider for one user pool."""
 
-    def __init__(self, mocker: AiohttpClientMocker) -> None:
+    def __init__(
+        self,
+        mocker: AiohttpClientMocker,
+        pool: CognitoPool,
+        *,
+        hide_user_existence: bool = False,
+    ) -> None:
         """Initialize with no users."""
         self.mocker = mocker
+        self.pool = pool
+        self.pool_name = pool.pool_id.split("_")[1]
+        # Answer unknown usernames with a decoy challenge, then "Incorrect
+        # username or password", instead of UserNotFoundException.
+        self.hide_user_existence = hide_user_existence
         self.users: dict[str, FakeUser] = {}
         self.case_sensitive_usernames = True
         self.expires_in = 3600
@@ -119,7 +137,7 @@ class FakeCognito:
 
     def add_user(self, email: str, password: str) -> FakeUser:
         """Register a user."""
-        user = FakeUser(email=email, password=password)
+        user = FakeUser(email=email, password=password, pool_name=self.pool_name)
         self.users[email] = user
         return user
 
@@ -187,7 +205,7 @@ class FakeCognito:
         body = json.loads(data)
         self.requests.append((target, body))
         assert headers.get("Content-Type") == "application/x-amz-json-1.1"
-        assert body.get("ClientId") == COGNITO_CLIENT_ID
+        assert body.get("ClientId") == self.pool.client_id
 
         if self.queued:
             item = self.queued.pop(0)
@@ -212,30 +230,32 @@ class FakeCognito:
         if flow != "USER_SRP_AUTH":
             return _error("InvalidParameterException", f"Unsupported flow {flow}")
         user = self._find_user(params.get("USERNAME", ""))
-        if user is None:
+        if user is None and not self.hide_user_existence:
             return _error("UserNotFoundException", "User does not exist.")
 
         srp_a = hex_to_long(params["SRP_A"])
         if srp_a % _BIG_N == 0:
             return _error("InvalidParameterException", "Invalid SRP_A")
         small_b = hex_to_long(secrets.token_hex(128)) % _BIG_N
-        srp_b = (_K * user.verifier + pow(_G, small_b, _BIG_N)) % _BIG_N
+        verifier = user.verifier if user else pow(_G, small_b, _BIG_N)
+        srp_b = (_K * verifier + pow(_G, small_b, _BIG_N)) % _BIG_N
         session = secrets.token_hex(16)
         secret_block = base64.standard_b64encode(secrets.token_bytes(64)).decode()
         self._sessions[session] = _PendingChallenge(
             user, srp_a, small_b, srp_b, secret_block
         )
+        user_id = user.user_id if user else f"uid-{secrets.token_hex(8)}"
         return _response(
             HTTPStatus.OK,
             {
                 "ChallengeName": "PASSWORD_VERIFIER",
                 "Session": session,
                 "ChallengeParameters": {
-                    "SALT": user.salt,
+                    "SALT": user.salt if user else secrets.token_hex(16),
                     "SECRET_BLOCK": secret_block,
                     "SRP_B": long_to_hex(srp_b),
-                    "USERNAME": user.user_id,
-                    "USER_ID_FOR_SRP": user.user_id,
+                    "USERNAME": user_id,
+                    "USER_ID_FOR_SRP": user_id,
                 },
             },
         )
@@ -252,6 +272,8 @@ class FakeCognito:
         timestamp = responses.get("TIMESTAMP", "")
         if not _TIMESTAMP_RE.match(timestamp):
             return _error("InvalidParameterException", "Invalid TIMESTAMP")
+        if pending.user is None:
+            return _error("NotAuthorizedException", "Incorrect username or password.")
         if responses.get("USERNAME") != pending.user.user_id:
             return _error("NotAuthorizedException", "Incorrect username or password.")
 
@@ -267,7 +289,7 @@ class FakeCognito:
             bytearray.fromhex(pad_hex(long_to_hex(u))),
         )
         message = (
-            _POOL_NAME.encode()
+            self.pool_name.encode()
             + pending.user.user_id.encode()
             + base64.standard_b64decode(pending.secret_block)
             + timestamp.encode()
@@ -290,6 +312,107 @@ class FakeCognito:
                 },
             )
         return _response(HTTPStatus.OK, self._authentication_result(True))
+
+
+class CognitoRouter:
+    """Send each Cognito request to the fake pool its ClientId belongs to."""
+
+    def __init__(self, *pools: FakeCognito) -> None:
+        """Initialize with the fake pools to route between."""
+        self.pools = {fake.pool.client_id: fake for fake in pools}
+
+    async def handle(
+        self, method: str, url: URL, data: Any
+    ) -> AiohttpClientMockResponse:
+        """Route one request."""
+        client_id = json.loads(data).get("ClientId")
+        if (fake := self.pools.get(client_id)) is None:
+            return _error("ResourceNotFoundException", "User pool client not found.")
+        return await fake.handle(method, url, data)
+
+
+def make_sample(
+    mac: str,
+    *,
+    raw_level: float = 890,
+    temp_c: float = 6,
+    battery: float = 3.234,
+    quality: float = 251,
+    timestamp_s: int = 1_793_667_625,
+) -> dict[str, Any]:
+    """Return a sample shaped like the retail sync response."""
+    return {
+        "m": mac,
+        "t": timestamp_s,
+        "v": battery,
+        "q": quality,
+        "r": raw_level,
+        "c": temp_c,
+    }
+
+
+class FakeRetail:
+    """Fake current-platform retail sync route.
+
+    Fails the test if a request body is anything but the empty sync, because a
+    real request with entries would change the account.
+    """
+
+    def __init__(self, mocker: AiohttpClientMocker, cognito: FakeCognito) -> None:
+        """Initialize with an empty account."""
+        self.mocker = mocker
+        self.cognito = cognito
+        self.devices: list[dict[str, Any]] = []
+        # Response to return instead of the device list, oldest first.
+        self.queued: list[AiohttpClientMockResponse | Exception] = []
+        self.requests: list[dict[str, Any]] = []
+
+    def add_device(self, mac: str, *samples: dict[str, Any]) -> None:
+        """Add a device with zero or more samples."""
+        self.devices.append(
+            {"updatedAt": 1_793_681_981_750, "mac": mac, "samples": list(samples)}
+        )
+
+    def response(
+        self, status: int, payload: Any = None, text: str | None = None
+    ) -> AiohttpClientMockResponse:
+        """Return a response object for queueing."""
+        return AiohttpClientMockResponse(
+            "put",
+            URL(RETAIL_SYNC_URL),
+            status=status,
+            json=payload,
+            text=text,
+            headers={"Content-Type": "application/json"},
+        )
+
+    async def handle(
+        self, method: str, url: URL, data: Any
+    ) -> AiohttpClientMockResponse:
+        """Handle one request routed here by aioclient_mock."""
+        headers = dict(self.mocker.mock_calls[-1][3] or {})
+        body = json.loads(data)
+        self.requests.append(
+            {
+                "method": method.upper(),
+                "query": dict(url.query),
+                "headers": headers,
+                "body": body,
+            }
+        )
+        assert method.upper() == "PUT"
+        assert body == EMPTY_RETAIL_SYNC, f"non-empty sync body: {body}"
+        assert headers.get("Content-Type") == "application/json"
+        if self.queued:
+            item = self.queued.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+        if headers.get("token") not in self.cognito.access_tokens:
+            return self.response(HTTPStatus.UNAUTHORIZED, {"message": "Unauthorized"})
+        return self.response(
+            HTTPStatus.OK, {"devices": deepcopy(self.devices), "deletedList": []}
+        )
 
 
 def make_device(
@@ -411,19 +534,28 @@ class FakeGateway:
 
 @dataclass
 class FakeCloud:
-    """Both fakes, wired into aioclient_mock."""
+    """All fakes, wired into aioclient_mock.
+
+    ``cognito`` and ``gateway`` are the older platform; ``current`` and
+    ``retail`` are the current platform.
+    """
 
     cognito: FakeCognito
     gateway: FakeGateway
+    current: FakeCognito
+    retail: FakeRetail
 
 
 def install_fake_cloud(mocker: AiohttpClientMocker) -> FakeCloud:
-    """Route Cognito and gateway requests to new fakes and return them."""
-    cognito = FakeCognito(mocker)
-    gateway = FakeGateway(mocker, cognito)
-    mocker.post(COGNITO_URL, side_effect=cognito.handle)
+    """Route Cognito, retail, and gateway requests to new fakes."""
+    legacy = FakeCognito(mocker, LEGACY_POOL)
+    current = FakeCognito(mocker, CURRENT_POOL, hide_user_existence=True)
+    gateway = FakeGateway(mocker, legacy)
+    retail = FakeRetail(mocker, current)
+    mocker.post(COGNITO_URL, side_effect=CognitoRouter(legacy, current).handle)
+    mocker.put(re.compile(r"^" + re.escape(RETAIL_SYNC_URL)), side_effect=retail.handle)
     mocker.get(
         re.compile(r"^" + re.escape(GATEWAY_URL) + r"(/|\?|$)"),
         side_effect=gateway.handle,
     )
-    return FakeCloud(cognito=cognito, gateway=gateway)
+    return FakeCloud(cognito=legacy, gateway=gateway, current=current, retail=retail)

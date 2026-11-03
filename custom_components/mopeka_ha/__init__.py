@@ -8,7 +8,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import MopekaApiClient
-from .const import DOMAIN
+from .const import CONF_BACKEND, DOMAIN
 from .coordinator import MopekaConfigEntry, MopekaCoordinator
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
@@ -17,11 +17,20 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 async def async_setup_entry(hass: HomeAssistant, entry: MopekaConfigEntry) -> bool:
     """Set up Mopeka HA from a config entry."""
     client = MopekaApiClient(
-        async_get_clientsession(hass), entry.data[CONF_EMAIL], entry.data[CONF_PASSWORD]
+        async_get_clientsession(hass),
+        entry.data[CONF_EMAIL],
+        entry.data[CONF_PASSWORD],
+        entry.data.get(CONF_BACKEND),
     )
     coordinator = MopekaCoordinator(hass, entry, client)
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
+
+    # Entries created before platform detection learn their platform here.
+    if client.backend and entry.data.get(CONF_BACKEND) != client.backend:
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_BACKEND: client.backend}
+        )
 
     _remove_excluded_devices(hass, entry, coordinator.excluded_devices)
 

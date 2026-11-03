@@ -1,9 +1,16 @@
-"""Client for the Mopeka Cloud API used by the Tank Check mobile app.
+"""Client for the Mopeka Cloud APIs used by Mopeka's mobile apps.
 
-Sign-in uses Amazon Cognito's Secure Remote Password (SRP) flow over plain
-HTTPS, as the app's AWS Amplify library does. The SRP math comes from
-pycognito, which Home Assistant already ships; pycognito's boto3 client is not
-used. The resulting token is sent to the Mopeka gateway in an ``Auth`` header.
+Mopeka runs two platforms, each with its own Amazon Cognito user pool:
+
+- the current platform (mopeka.cloud), used by the Co-Pilot app. Retail
+  accounts read data with one sync request to /api/devices/retail;
+- the older platform used by the Tank Check app, with its own gateway.
+
+Sign-in tries the current platform first and falls back to the older one, then
+remembers which platform holds the account. Both use Cognito's Secure Remote
+Password (SRP) flow over plain HTTPS, as the apps' AWS Amplify library does.
+The SRP math comes from pycognito, which Home Assistant already ships;
+pycognito's boto3 client is not used.
 
 Every request is logged at debug level with tokens, SRP values, and email
 addresses removed, so a debug log shows exactly what failed.
@@ -28,12 +35,17 @@ from pycognito.aws_srp import AWSSRP, hex_to_long
 from yarl import URL
 
 from .const import (
-    COGNITO_CLIENT_ID,
-    COGNITO_URL,
-    COGNITO_USER_POOL_ID,
+    BACKEND_LEGACY,
+    BACKEND_RETAIL,
+    CURRENT_POOL,
+    EMPTY_RETAIL_SYNC,
     GATEWAY_HEADERS,
     GATEWAY_URL,
+    LEGACY_POOL,
     REQUEST_TIMEOUT,
+    RETAIL_HEADERS,
+    RETAIL_SYNC_URL,
+    CognitoPool,
 )
 from .models import MopekaDevice, MopekaReading, MopekaTank
 
@@ -92,6 +104,14 @@ _COGNITO_TRANSIENT_ERRORS: Final = frozenset(
 _TOKEN_EXPIRY_MARGIN: Final = 60  # seconds
 
 TokenKind = Literal["access", "id"]
+
+_POOLS: Final = {BACKEND_RETAIL: CURRENT_POOL, BACKEND_LEGACY: LEGACY_POOL}
+# Errors meaning "this pool does not know these credentials". The current pool
+# hides whether an account exists, so it answers NotAuthorizedException even for
+# accounts that only exist in the older pool.
+_ACCOUNT_NOT_IN_POOL: Final = frozenset(
+    {"NotAuthorizedException", "UserNotFoundException"}
+)
 
 
 class MopekaError(Exception):
@@ -162,7 +182,7 @@ def _password_verifier_response(
     )
     timestamp: str = srp.get_cognito_formatted_timestamp(datetime.now(UTC))
     message = (
-        COGNITO_USER_POOL_ID.split("_")[1].encode()
+        str(srp.pool_id).split("_")[1].encode()
         + user_id.encode()
         + base64.standard_b64decode(secret_block)
         + timestamp.encode()
@@ -174,6 +194,12 @@ def _password_verifier_response(
         "PASSWORD_CLAIM_SECRET_BLOCK": secret_block,
         "PASSWORD_CLAIM_SIGNATURE": base64.standard_b64encode(signature).decode(),
     }
+
+
+def _sample_time(sample: dict[str, Any]) -> float:
+    """Return a retail sample's timestamp for sorting, or 0 if it has none."""
+    value = sample.get("t")
+    return float(value) if isinstance(value, int | float) else 0.0
 
 
 class _NoBotoClient:
@@ -189,6 +215,7 @@ class _Tokens:
     id_token: str
     refresh_token: str | None
     expires_at: float
+    pool: CognitoPool
 
     def expired(self) -> bool:
         return time.time() >= self.expires_at - _TOKEN_EXPIRY_MARGIN
@@ -209,18 +236,32 @@ class MopekaApiClient:
     """Read tank sensors from Mopeka Cloud."""
 
     def __init__(
-        self, session: aiohttp.ClientSession, email: str, password: str
+        self,
+        session: aiohttp.ClientSession,
+        email: str,
+        password: str,
+        backend: str | None = None,
     ) -> None:
-        """Initialize the client. No request is made until data is requested."""
+        """Initialize the client. No request is made until data is requested.
+
+        ``backend`` is BACKEND_RETAIL or BACKEND_LEGACY if known, or None to
+        detect it at the first sign-in.
+        """
         self._session = session
         self._email = email
         self._password = password
+        self._backend = backend if backend in _POOLS else None
         self._tokens: _Tokens | None = None
         self._token_lock = asyncio.Lock()
         # The app's token type for the gateway's Auth header. The access token
         # is known to work; the ID token is tried if the gateway rejects it.
         self._token_kind: TokenKind = "access"
         self._timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+
+    @property
+    def backend(self) -> str | None:
+        """Return the platform holding the account, once known."""
+        return self._backend
 
     # Authentication
 
@@ -241,7 +282,9 @@ class MopekaApiClient:
                     return tokens
             if tokens is not None and tokens.refresh_token:
                 try:
-                    self._tokens = await self._refresh(tokens.refresh_token)
+                    self._tokens = await self._refresh(
+                        tokens.refresh_token, tokens.pool
+                    )
                 except MopekaAuthError as err:
                     _LOGGER.debug("Refresh token not accepted (%s); signing in", err)
                 else:
@@ -261,41 +304,69 @@ class MopekaApiClient:
         return [entered] if lowered == entered else [entered, lowered]
 
     async def _login(self) -> _Tokens:
+        """Sign in to the account's platform, detecting it if not yet known."""
+        if self._backend is not None:
+            return await self._login_to_pool(_POOLS[self._backend])
+        try:
+            tokens = await self._login_to_pool(CURRENT_POOL)
+        except MopekaAuthError as current_error:
+            if current_error.code not in _ACCOUNT_NOT_IN_POOL:
+                raise
+            _LOGGER.debug(
+                "Current platform did not accept the sign-in (%s); trying the "
+                "older platform",
+                current_error,
+            )
+            try:
+                tokens = await self._login_to_pool(LEGACY_POOL)
+            except MopekaAuthError as legacy_error:
+                if legacy_error.code not in _ACCOUNT_NOT_IN_POOL:
+                    raise  # The older platform knows the account; report why.
+                _LOGGER.debug("Older platform did not either: %s", legacy_error)
+                raise current_error from None
+            self._backend = BACKEND_LEGACY
+        else:
+            self._backend = BACKEND_RETAIL
+        _LOGGER.debug("Account is on the %s platform", self._backend)
+        return tokens
+
+    async def _login_to_pool(self, pool: CognitoPool) -> _Tokens:
         candidates = self._username_candidates()
         for index, username in enumerate(candidates):
             try:
-                return await self._srp_login(username)
+                return await self._srp_login(username, pool)
             except MopekaAuthError as err:
                 if err.code != "UserNotFoundException" or index == len(candidates) - 1:
                     raise
                 _LOGGER.debug("Account not found as entered; trying lower-case email")
         raise AssertionError("unreachable")  # pragma: no cover
 
-    async def _srp_login(self, username: str) -> _Tokens:
+    async def _srp_login(self, username: str, pool: CognitoPool) -> _Tokens:
         loop = asyncio.get_running_loop()
         srp: AWSSRP = await loop.run_in_executor(
             None,
             lambda: AWSSRP(
                 username=username,
                 password=self._password,
-                pool_id=COGNITO_USER_POOL_ID,
-                client_id=COGNITO_CLIENT_ID,
+                pool_id=pool.pool_id,
+                client_id=pool.client_id,
                 client=_NoBotoClient(),
             ),
         )
         auth_params: dict[str, str] = srp.get_auth_params()
         response = await self._cognito(
+            pool,
             "InitiateAuth",
             {
                 "AuthFlow": "USER_SRP_AUTH",
-                "ClientId": COGNITO_CLIENT_ID,
+                "ClientId": pool.client_id,
                 "AuthParameters": auth_params,
                 "ClientMetadata": {},
             },
         )
         challenge = response.get("ChallengeName")
         if challenge != "PASSWORD_VERIFIER":
-            return self._tokens_from(response, previous_refresh_token=None)
+            return self._tokens_from(response, pool, previous_refresh_token=None)
 
         challenge_params = response.get("ChallengeParameters")
         if not isinstance(challenge_params, dict):
@@ -309,36 +380,39 @@ class MopekaApiClient:
 
         request: dict[str, Any] = {
             "ChallengeName": "PASSWORD_VERIFIER",
-            "ClientId": COGNITO_CLIENT_ID,
+            "ClientId": pool.client_id,
             "ChallengeResponses": challenge_responses,
             "ClientMetadata": {},
         }
         if session := response.get("Session"):
             request["Session"] = session
-        response = await self._cognito("RespondToAuthChallenge", request)
-        return self._tokens_from(response, previous_refresh_token=None)
+        response = await self._cognito(pool, "RespondToAuthChallenge", request)
+        return self._tokens_from(response, pool, previous_refresh_token=None)
 
-    async def _refresh(self, refresh_token: str) -> _Tokens:
+    async def _refresh(self, refresh_token: str, pool: CognitoPool) -> _Tokens:
         response = await self._cognito(
+            pool,
             "InitiateAuth",
             {
                 "AuthFlow": "REFRESH_TOKEN_AUTH",
-                "ClientId": COGNITO_CLIENT_ID,
+                "ClientId": pool.client_id,
                 "AuthParameters": {"REFRESH_TOKEN": refresh_token},
             },
         )
-        return self._tokens_from(response, previous_refresh_token=refresh_token)
+        return self._tokens_from(response, pool, previous_refresh_token=refresh_token)
 
     @staticmethod
     def _tokens_from(
-        response: dict[str, Any], previous_refresh_token: str | None
+        response: dict[str, Any],
+        pool: CognitoPool,
+        previous_refresh_token: str | None,
     ) -> _Tokens:
         """Extract tokens from a Cognito response, or explain why there are none."""
         if challenge := response.get("ChallengeName"):
             # MFA, a forced password change, and similar steps need a person.
             raise MopekaAuthError(
                 f"Sign-in requires the {challenge} step, which this integration "
-                "does not support. Complete it in the Tank Check app, then retry.",
+                "does not support. Complete it in the Mopeka app, then retry.",
                 code=str(challenge),
             )
         result = response.get("AuthenticationResult")
@@ -362,9 +436,12 @@ class MopekaApiClient:
                 else previous_refresh_token
             ),
             expires_at=time.time() + expires_in,
+            pool=pool,
         )
 
-    async def _cognito(self, target: str, body: dict[str, Any]) -> dict[str, Any]:
+    async def _cognito(
+        self, pool: CognitoPool, target: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
         """Call one Cognito Identity Provider operation and return its JSON."""
         headers = {
             "Content-Type": "application/x-amz-json-1.1",
@@ -374,7 +451,7 @@ class MopekaApiClient:
         started = time.monotonic()
         try:
             async with self._session.post(
-                COGNITO_URL,
+                pool.url,
                 data=json.dumps(body),
                 headers=headers,
                 timeout=self._timeout,
@@ -416,31 +493,44 @@ class MopekaApiClient:
             raise MopekaConnectionError(f"Amazon Cognito is unavailable: {detail}")
         raise MopekaApiError(f"Amazon Cognito {target} failed: {detail}")
 
-    # Gateway
+    # Data requests
 
-    async def _gateway_request(
-        self, url: URL, params: dict[str, str], tokens: _Tokens
+    async def _send(
+        self,
+        label: str,
+        method: str,
+        url: URL,
+        params: dict[str, str],
+        headers: dict[str, str],
+        body: str | None = None,
     ) -> tuple[int, Any]:
-        headers = {**GATEWAY_HEADERS, "Auth": tokens.get(self._token_kind)}
-        _LOGGER.debug(
-            "Gateway GET %s params=%s (%s token)", url, params, self._token_kind
-        )
+        """Send one data request and return its status and parsed JSON body."""
+        _LOGGER.debug("%s %s %s params=%s", label, method, url, params)
         started = time.monotonic()
         try:
-            async with self._session.get(
-                url, params=params, headers=headers, timeout=self._timeout
+            async with self._session.request(
+                method,
+                url,
+                params=params,
+                headers=headers,
+                data=body,
+                timeout=self._timeout,
             ) as resp:
                 status = resp.status
                 text = await resp.text()
         except TimeoutError as err:
-            _LOGGER.debug("Gateway GET %s timed out after %ss", url, REQUEST_TIMEOUT)
+            _LOGGER.debug(
+                "%s %s %s timed out after %ss", label, method, url, REQUEST_TIMEOUT
+            )
             raise MopekaConnectionError("Timed out contacting Mopeka Cloud") from err
         except aiohttp.ClientError as err:
-            _LOGGER.debug("Gateway GET %s failed: %r", url, err)
+            _LOGGER.debug("%s %s %s failed: %r", label, method, url, err)
             raise MopekaConnectionError(f"Cannot reach Mopeka Cloud: {err}") from err
 
         _LOGGER.debug(
-            "Gateway GET %s response: HTTP %s in %d ms: %s",
+            "%s %s %s response: HTTP %s in %d ms: %s",
+            label,
+            method,
             url,
             status,
             (time.monotonic() - started) * 1000,
@@ -450,6 +540,83 @@ class MopekaApiClient:
         if status == 200 and payload is None:
             raise MopekaApiError(f"Mopeka Cloud returned non-JSON data from {url}")
         return status, payload
+
+    # Current platform: retail sync
+
+    async def _retail_request(self, tokens: _Tokens) -> tuple[int, Any]:
+        return await self._send(
+            "Retail sync",
+            "PUT",
+            URL(RETAIL_SYNC_URL),
+            {"lastUpdatedAt": "0"},
+            {
+                **RETAIL_HEADERS,
+                "Content-Type": "application/json",
+                "token": tokens.access_token,
+            },
+            json.dumps(EMPTY_RETAIL_SYNC),
+        )
+
+    async def _retail_sync(self) -> Any:
+        """Return the retail sync response, refreshing tokens once on HTTP 401."""
+        tokens = await self._ensure_tokens()
+        status, payload = await self._retail_request(tokens)
+        if status == 401:
+            _LOGGER.debug("Retail sync rejected the token; refreshing")
+            tokens = await self._ensure_tokens(rejected=tokens)
+            status, payload = await self._retail_request(tokens)
+            if status == 401:
+                raise MopekaApiError("Mopeka Cloud rejected a newly issued token")
+        if status == 403:
+            raise MopekaApiError(
+                "Mopeka Cloud refused to share this account's devices (HTTP 403)"
+            )
+        if status == 429 or status >= 500:
+            raise MopekaConnectionError(f"Mopeka Cloud is unavailable (HTTP {status})")
+        if status != 200:
+            raise MopekaApiError(f"Mopeka Cloud returned HTTP {status} for the sync")
+        return payload
+
+    async def _get_retail_account_data(
+        self, excluded: frozenset[str]
+    ) -> MopekaAccountData:
+        payload = await self._retail_sync()
+        raw_devices = payload.get("devices") if isinstance(payload, dict) else None
+        if not isinstance(raw_devices, list):
+            raise MopekaApiError("Retail sync response has no 'devices' array")
+        devices: dict[str, MopekaDevice] = {}
+        tanks: dict[str, MopekaTank] = {}
+        for raw in raw_devices:
+            device = MopekaDevice.from_retail(raw) if isinstance(raw, dict) else None
+            if device is None:
+                _LOGGER.debug("Skipping device entry without a MAC: %s", redact(raw))
+                continue
+            devices[device.address] = device
+            samples = [s for s in raw.get("samples") or [] if isinstance(s, dict)]
+            if not samples:
+                _LOGGER.debug("No reading in Mopeka Cloud for %s", device.address)
+                continue
+            if device.address in excluded:
+                continue
+            latest = max(samples, key=lambda s: _sample_time(s))
+            tanks[device.address] = MopekaTank(
+                device=device, reading=MopekaReading.from_retail(latest)
+            )
+        return MopekaAccountData(devices=devices, tanks=tanks)
+
+    # Older platform: gateway
+
+    async def _gateway_request(
+        self, url: URL, params: dict[str, str], tokens: _Tokens
+    ) -> tuple[int, Any]:
+        _LOGGER.debug("Gateway request uses the %s token", self._token_kind)
+        return await self._send(
+            "Gateway",
+            "GET",
+            url,
+            params,
+            {**GATEWAY_HEADERS, "Auth": tokens.get(self._token_kind)},
+        )
 
     async def _gateway_get(self, url: URL, params: dict[str, str]) -> Any:
         """GET a gateway URL, refreshing tokens once if the gateway rejects them."""
@@ -528,9 +695,21 @@ class MopekaApiClient:
     ) -> MopekaAccountData:
         """Return every device on the account and the latest reading for each.
 
-        Devices in ``excluded`` are listed but not read. A device whose reading
-        cannot be fetched is left out of ``tanks`` for this poll; the poll fails
-        only if no device could be read at all.
+        Devices in ``excluded`` are listed but left out of ``tanks``. Devices
+        without a cloud reading are also left out of ``tanks``.
+        """
+        await self._ensure_tokens()
+        if self._backend == BACKEND_RETAIL:
+            return await self._get_retail_account_data(excluded)
+        return await self._get_legacy_account_data(excluded)
+
+    async def _get_legacy_account_data(
+        self, excluded: frozenset[str]
+    ) -> MopekaAccountData:
+        """Read the older platform, one request per device.
+
+        A device whose reading cannot be fetched is left out of ``tanks`` for
+        this poll; the poll fails only if no device could be read at all.
         """
         devices = await self.get_devices()
         to_read = [d for d in devices if d.address not in excluded]
@@ -545,9 +724,7 @@ class MopekaApiClient:
             if isinstance(result, MopekaAuthError):
                 raise result
             if isinstance(result, MopekaError):
-                _LOGGER.warning(
-                    "Cannot read %s: %s", device.name or device.address, result
-                )
+                _LOGGER.warning("Cannot read %s: %s", device.display_name, result)
                 errors.append(result)
             elif isinstance(result, BaseException):
                 raise result

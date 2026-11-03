@@ -45,9 +45,15 @@ _LITRES_PER_UNIT: Final = {
 _LITRES_PER_US_GALLON: Final = 3.78541
 _INCHES_PER_METRE: Final = 39.3701
 
-# Offset subtracted from the raw level reading, in metres. Carried over from
-# the upstream client; its origin is undocumented.
-_LEVEL_OFFSET_M: Final = 0.017
+# Offset subtracted from the older platform's level reading, in metres. Carried
+# over from the upstream client; its origin is undocumented.
+_LEGACY_LEVEL_OFFSET_M: Final = 0.017
+
+# Converts a sensor's raw echo time to millimetres of propane, as a quadratic in
+# the sensor's raw temperature byte (degrees Celsius plus 40). These are the
+# propane coefficients used by Home Assistant's Bluetooth Mopeka integration.
+_PROPANE_LEVEL_COEFFICIENTS: Final = (0.573045, -0.002822, -0.00000535)
+_RAW_TEMPERATURE_OFFSET: Final = 40
 
 # Length of a horizontal tank's cylindrical section, in multiples of its radius.
 # Carried over from the upstream client; it is an assumption, not a measurement.
@@ -90,6 +96,13 @@ def _to_str(value: Any) -> str | None:
     return text or None
 
 
+def raw_level_to_m(raw_level: float, temperature_c: float) -> float:
+    """Convert a raw echo-time reading to a propane level in metres."""
+    temp = temperature_c + _RAW_TEMPERATURE_OFFSET
+    c0, c1, c2 = _PROPANE_LEVEL_COEFFICIENTS
+    return max(0.0, raw_level * (c0 + c1 * temp + c2 * temp**2) / 1000)
+
+
 def ddb_value(item: dict[str, Any], key: str) -> Any:
     """Return a plain value from a DynamoDB-typed attribute such as {"N": "1.5"}."""
     attribute = item.get(key)
@@ -115,6 +128,30 @@ class MopekaDevice:
     tank_height: float | None
     vertical: bool | None
     propane_butane_ratio: float | None
+
+    @property
+    def display_name(self) -> str:
+        """Return the device name, or a short name built from its address."""
+        if self.name:
+            return self.name
+        suffix = self.address.replace(":", "").replace("-", "")[-4:].upper()
+        return f"Mopeka {suffix}"
+
+    @classmethod
+    def from_retail(cls, data: dict[str, Any]) -> MopekaDevice | None:
+        """Build a device from the retail sync response, or None without a MAC."""
+        address = _to_str(data.get("mac"))
+        if address is None:
+            return None
+        return cls(
+            address=address,
+            name=_to_str(data.get("name")),
+            model_number=None,
+            tank_type=None,
+            tank_height=None,
+            vertical=None,
+            propane_butane_ratio=None,
+        )
 
     @classmethod
     def from_api(cls, data: dict[str, Any]) -> MopekaDevice | None:
@@ -143,6 +180,40 @@ class MopekaReading:
     battery_voltage: float | None
     quality: float | None
     gateway_id: str | None
+    # Subtracted from level_m before use. Only the older platform needs it.
+    level_offset_m: float = 0.0
+    # The current platform's "q" value. Its scale is not yet known.
+    raw_quality: float | None = None
+
+    @classmethod
+    def from_retail(cls, sample: dict[str, Any]) -> MopekaReading:
+        """Build a reading from one sample in the retail sync response.
+
+        Samples are decoded sensor broadcasts: t is the time in Unix seconds, r
+        the raw echo time, c the temperature in degrees Celsius, v the battery
+        voltage, and q a quality value of unknown scale.
+        """
+        timestamp_s = _to_float(sample.get("t"))
+        raw_level = _to_float(sample.get("r"))
+        temperature = _to_float(sample.get("c"))
+        level = (
+            raw_level_to_m(raw_level, temperature)
+            if raw_level is not None and temperature is not None
+            else None
+        )
+        return cls(
+            timestamp=(
+                datetime.fromtimestamp(timestamp_s, tz=UTC)
+                if timestamp_s is not None and timestamp_s > 0
+                else None
+            ),
+            level_m=level,
+            temperature_c=temperature,
+            battery_voltage=_to_float(sample.get("v")),
+            quality=None,
+            gateway_id=None,
+            raw_quality=_to_float(sample.get("q")),
+        )
 
     @classmethod
     def from_api(cls, item: dict[str, Any]) -> MopekaReading:
@@ -160,6 +231,7 @@ class MopekaReading:
             battery_voltage=_to_float(ddb_value(item, "BatteryLevel")),
             quality=_to_float(ddb_value(item, "Quality")),
             gateway_id=_to_str(ddb_value(item, "Source")),
+            level_offset_m=_LEGACY_LEVEL_OFFSET_M,
         )
 
 
@@ -213,11 +285,11 @@ class MopekaTank:
 
     @property
     def level_m(self) -> float | None:
-        """Return the liquid level in metres, after the calibration offset."""
+        """Return the liquid level in metres, after any calibration offset."""
         if self.reading is None or self.reading.level_m is None:
             return None
         raw = self.reading.level_m
-        return max(0.0, raw - _LEVEL_OFFSET_M) if raw > 0 else 0.0
+        return max(0.0, raw - self.reading.level_offset_m) if raw > 0 else 0.0
 
     @property
     def fill_percent(self) -> float | None:

@@ -17,6 +17,8 @@ from homeassistant.helpers import device_registry as dr
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.mopeka_ha.const import (
+    BACKEND_LEGACY,
+    CONF_BACKEND,
     CONF_EXCLUDED_DEVICES,
     CONF_SENSORS,
     CONF_UPDATE_INTERVAL,
@@ -62,7 +64,7 @@ async def test_user_flow(hass: HomeAssistant, fake_cloud: FakeCloud) -> None:
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == EMAIL
-    assert result["data"] == USER_INPUT
+    assert result["data"] == {**USER_INPUT, CONF_BACKEND: BACKEND_LEGACY}
     assert result["options"] == {
         CONF_SENSORS: ["fill_percent", "battery_voltage"],
         CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
@@ -232,6 +234,7 @@ async def test_reconfigure(
     assert config_entry.data == {
         CONF_EMAIL: EMAIL.title(),
         CONF_PASSWORD: "new-password",
+        CONF_BACKEND: BACKEND_LEGACY,
     }
 
 

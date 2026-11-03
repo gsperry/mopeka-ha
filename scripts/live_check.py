@@ -13,6 +13,9 @@ from the MOPEKA_EMAIL and MOPEKA_PASSWORD environment variables, or from a
     uv run scripts/live_check.py --debug
     uv run scripts/live_check.py --record tests/fixtures
 
+In the Home Assistant OS terminal add-on, add --managed-python --python 3.13
+after `uv run`.
+
 The summary uses placeholder names, so it is safe to share. --debug adds the
 client's request log; tokens and email are redacted, but tank names and sensor
 addresses are not. --record writes anonymized API responses for test fixtures.

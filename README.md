@@ -205,6 +205,10 @@ credentials, then run:
 uv run scripts/live_check.py
 ```
 
+In the Home Assistant OS terminal add-on, add `--managed-python --python 3.13` after
+`uv run`. The add-on's package index only carries packages built for Home Assistant's own
+Python version, so uv must download a matching Python itself.
+
 ### Reporting a bug
 
 Open an [issue](https://github.com/gsperry/mopeka-ha/issues) and include your Home

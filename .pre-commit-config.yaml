@@ -1,0 +1,37 @@
+# Install with:  pre-commit install
+# ruff and mypy run from your development environment, so they use the versions
+# pinned in requirements_test.txt, the same as CI.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: detect-private-key
+      - id: end-of-file-fixer
+        exclude: ^tests/snapshots/
+      - id: trailing-whitespace
+        exclude: ^tests/snapshots/
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check --fix
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: ruff format
+        language: system
+        types_or: [python, pyi]
+      - id: mypy
+        name: mypy (strict)
+        entry: mypy
+        language: system
+        pass_filenames: false
+        files: ^custom_components/
+        types: [python]

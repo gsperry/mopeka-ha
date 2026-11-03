@@ -1,0 +1,22 @@
+{
+  "devices": [
+    {
+      "address": "00:00:00:00:00:0A",
+      "name": "Tank 1",
+      "modelNumber": "M1017",
+      "tankType": "20lb",
+      "tankHeight": 0.3,
+      "vertical": true,
+      "propaneButaneRatio": 1
+    },
+    {
+      "address": "00:00:00:00:00:0B",
+      "name": "Tank 2",
+      "modelNumber": "M1017",
+      "tankType": "100gal",
+      "tankHeight": 0.9,
+      "vertical": false,
+      "propaneButaneRatio": 1
+    }
+  ]
+}

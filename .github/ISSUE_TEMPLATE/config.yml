@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Troubleshooting guide
+    url: https://github.com/gsperry/mopeka-ha#troubleshooting
+    about: Common setup problems and how to collect a debug log.

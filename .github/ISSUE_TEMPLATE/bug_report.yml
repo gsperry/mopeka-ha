@@ -1,0 +1,66 @@
+name: Bug report
+description: Something does not work as described in the README.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Please check the README's
+        [troubleshooting section](https://github.com/gsperry/mopeka-ha#troubleshooting) first.
+
+        **Never paste your Mopeka password, tokens, or a full traffic capture.**
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: integration_version
+    attributes:
+      label: Integration version
+      description: Shown in HACS, or in `custom_components/mopeka_ha/manifest.json`.
+      placeholder: 2.0.0
+    validations:
+      required: true
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant version
+      description: Settings > About.
+      placeholder: 2026.10.4
+    validations:
+      required: true
+  - type: dropdown
+    id: app
+    attributes:
+      label: Which Mopeka app does your account use?
+      options:
+        - Mopeka Co-Pilot
+        - Tank Check
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Sensors and bridge
+      description: Sensor models, and how readings reach the cloud.
+      placeholder: Pro Check, through a cellular bridge
+  - type: textarea
+    id: logs
+    attributes:
+      label: Debug log
+      description: |
+        Turn on debug logging (README > Troubleshooting), reproduce the problem, and
+        paste the lines from `custom_components.mopeka_ha`. Passwords, tokens, and your
+        email are redacted automatically; remove tank names if you prefer.
+      render: text
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: |
+        If the integration loads, download diagnostics from the integration's menu and
+        attach the file. Credentials and identifiers are redacted.

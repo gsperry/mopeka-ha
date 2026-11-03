@@ -1,200 +1,266 @@
 """Config flow for Mopeka HA."""
-import asyncio
-import voluptuous as vol
-import homeassistant.helpers.config_validation as cv
-from homeassistant import config_entries
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Mapping
+from typing import Any
+
+import probatio as vol
+from homeassistant.config_entries import (
+    ConfigEntryState,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
-from homeassistant.data_entry_flow import AbortFlow
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
-from . import API_DEFAULTS, CONF_INTERVAL, DEFAULT_INTERVAL, DOMAIN
+from .api import (
+    MopekaAccountData,
+    MopekaApiClient,
+    MopekaApiError,
+    MopekaAuthError,
+    MopekaConnectionError,
+)
+from .const import (
+    CONF_BACKEND,
+    CONF_EXCLUDED_DEVICES,
+    CONF_UPDATE_INTERVAL,
+    CONFIG_ENTRY_MINOR_VERSION,
+    CONFIG_ENTRY_VERSION,
+    DEFAULT_UPDATE_INTERVAL,
+    DOMAIN,
+    MAX_UPDATE_INTERVAL,
+    MIN_UPDATE_INTERVAL,
+)
+from .coordinator import MopekaConfigEntry, update_interval_minutes
 
-STATIC_SENSORS = [
-    "battery_voltage",
-    "fill_percent",
-    "level_cm",
-    "level_inches",
-    "propaneButaneRatio",
-    "signal_quality",
-    "tank_height",
-    "tank_type",
-    "temperature_c",
-    "temperature_f",
-    "updated_human_readable",
-    "vertical",
-    "volume_gallons_us",
-    "volume_liters",
-    "volume_original_unit"
-]
+_LOGGER = logging.getLogger(__name__)
 
-def _get_client(data):
-    from mopeka.client import MopekaClient
-    return MopekaClient({"username": data[CONF_EMAIL], "password": data[CONF_PASSWORD], **API_DEFAULTS})
+_EMAIL_SELECTOR = TextSelector(
+    TextSelectorConfig(type=TextSelectorType.EMAIL, autocomplete="username")
+)
+_PASSWORD_SELECTOR = TextSelector(
+    TextSelectorConfig(type=TextSelectorType.PASSWORD, autocomplete="current-password")
+)
+_CREDENTIALS_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_EMAIL): _EMAIL_SELECTOR,
+        vol.Required(CONF_PASSWORD): _PASSWORD_SELECTOR,
+    }
+)
 
-async def validate_auth(data):
-    def _validate():
-        return _get_client(data).get_full_state()
-    return await asyncio.to_thread(_validate)
 
-def _get_combined_states(states_list):
-    combined = {}
-    for device in states_list:
-        for key in STATIC_SENSORS:
-            if key in device and device[key] is not None:
-                if key not in combined or combined[key] == "n/a":
-                    combined[key] = device[key]
-    return combined
+async def _validate(
+    hass: HomeAssistant, email: str, password: str
+) -> tuple[str | None, dict[str, str]]:
+    """Sign in and read the account.
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    VERSION = 1
+    Return the platform holding the account, or None and a form error.
+    """
+    client = MopekaApiClient(async_get_clientsession(hass), email, password)
+    try:
+        data = await client.get_account_data()
+    except MopekaAuthError as err:
+        _LOGGER.warning("Mopeka sign-in was rejected: %s", err)
+        return None, {"base": "invalid_auth"}
+    except MopekaConnectionError as err:
+        _LOGGER.warning("Cannot connect to Mopeka Cloud: %s", err)
+        return None, {"base": "cannot_connect"}
+    except MopekaApiError:
+        _LOGGER.exception("Unexpected response from Mopeka Cloud")
+        return None, {"base": "unknown"}
+    except Exception:
+        _LOGGER.exception("Unexpected error while checking the Mopeka account")
+        return None, {"base": "unknown"}
+    _LOGGER.debug(
+        "Mopeka account on the %s platform has %d device(s), %d with readings",
+        client.backend,
+        len(data.devices),
+        len(data.tanks),
+    )
+    return client.backend, {}
+
+
+class MopekaConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for Mopeka HA."""
+
+    VERSION = CONFIG_ENTRY_VERSION
+    MINOR_VERSION = CONFIG_ENTRY_MINOR_VERSION
 
     @staticmethod
-    def async_get_options_flow(config_entry):
-        return OptionsFlowHandler(config_entry)
+    @callback
+    def async_get_options_flow(config_entry: MopekaConfigEntry) -> MopekaOptionsFlow:
+        """Return the options flow."""
+        return MopekaOptionsFlow()
 
-    async def async_step_user(self, user_input=None):
-        errors = {}
-        if user_input:
-            try:
-                await validate_auth(user_input)
-                await self.async_set_unique_id(user_input[CONF_EMAIL].lower())
-                self._abort_if_unique_id_configured()
-                self._data = user_input
-                return await self.async_step_sensors()
-            except AbortFlow:
-                raise
-            except Exception as err:
-                if "401" in str(err) or "unauthorized" in str(err).lower():
-                    errors["base"] = "invalid_auth"
-                else:
-                    errors["base"] = "cannot_connect"
-        return self.async_show_form(
-            step_id="user",
-            data_schema=vol.Schema({vol.Required(CONF_EMAIL): str, vol.Required(CONF_PASSWORD): str}),
-            errors=errors
-        )
-
-    async def async_step_reconfigure(self, user_input=None):
-        errors = {}
-        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
-        if user_input:
-            try:
-                await validate_auth(user_input)
-                return self.async_update_reload_and_abort(entry, data={**entry.data, **user_input})
-            except AbortFlow:
-                raise
-            except Exception as err:
-                if "401" in str(err) or "unauthorized" in str(err).lower():
-                    errors["base"] = "invalid_auth"
-                else:
-                    errors["base"] = "cannot_connect"
-        return self.async_show_form(
-            step_id="reconfigure",
-            data_schema=vol.Schema({
-                vol.Required(CONF_EMAIL, default=entry.data[CONF_EMAIL]): str,
-                vol.Required(CONF_PASSWORD): str
-            }),
-            errors=errors
-        )
-
-    async def async_step_sensors(self, user_input=None):
-        errors = {}
-        try:
-            states = await asyncio.to_thread(lambda: _get_client(self._data).get_full_state())
-            display_data = _get_combined_states(states)
-        except Exception:
-            display_data = {}
-
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask for the account email and password."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            selected = []
-            for k, v in user_input.items():
-                if v:
-                    if "(" in k:
-                        sensor_key = k.split(" (")[0]
-                    else:
-                        sensor_key = k
-                    selected.append(sensor_key)
-            
-            if not selected:
-                errors["base"] = "no_sensors_selected"
-            else:
+            email = user_input[CONF_EMAIL].strip()
+            await self.async_set_unique_id(email.lower())
+            self._abort_if_unique_id_configured()
+            backend, errors = await _validate(
+                self.hass, email, user_input[CONF_PASSWORD]
+            )
+            if backend is not None:
                 return self.async_create_entry(
-                    title=self._data[CONF_EMAIL],
-                    data=self._data,
-                    options={"sensors": selected, CONF_INTERVAL: DEFAULT_INTERVAL}
+                    title=email,
+                    data={
+                        CONF_EMAIL: email,
+                        CONF_PASSWORD: user_input[CONF_PASSWORD],
+                        CONF_BACKEND: backend,
+                    },
+                    options={CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL},
                 )
 
-        schema_dict = {}
-        for s in sorted(STATIC_SENSORS):
-            val = display_data.get(s, "n/a")
-            display_label = f"{s} ({val})"
-            schema_dict[vol.Optional(display_label, default=False)] = bool
+        return self.async_show_form(
+            step_id="user",
+            data_schema=self.add_suggested_values_to_schema(
+                _CREDENTIALS_SCHEMA,
+                {CONF_EMAIL: user_input[CONF_EMAIL]} if user_input else None,
+            ),
+            errors=errors,
+        )
 
-        return self.async_show_form(step_id="sensors", data_schema=vol.Schema(schema_dict), errors=errors)
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Start re-authentication after Mopeka rejected the stored password."""
+        return await self.async_step_reauth_confirm()
 
-class OptionsFlowHandler(config_entries.OptionsFlow):
-    def __init__(self, entry):
-        self.entry = entry
-
-    async def async_step_init(self, user_input=None):
-        errors = {}
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask for the current password."""
+        entry = self._get_reauth_entry()
+        errors: dict[str, str] = {}
         if user_input is not None:
-            new_data = dict(self.entry.data)
-            new_options = dict(self.entry.options)
-            
-            pwd = user_input.get(CONF_PASSWORD) or self.entry.data[CONF_PASSWORD]
-            check_data = {CONF_EMAIL: self.entry.data[CONF_EMAIL], CONF_PASSWORD: pwd}
-            
-            selected = []
-            for k, v in user_input.items():
-                if v:
-                    if "(" in k:
-                        sensor_key = k.split(" (")[0]
-                    else:
-                        sensor_key = k
-                    selected.append(sensor_key)
-            
-            if not selected:
-                errors["base"] = "no_sensors_selected"
-            else:
-                try:
-                    await validate_auth(check_data)
-                    if user_input.get(CONF_PASSWORD):
-                        new_data[CONF_PASSWORD] = user_input.pop(CONF_PASSWORD)
-                    else:
-                        user_input.pop(CONF_PASSWORD, None)
+            backend, errors = await _validate(
+                self.hass, entry.data[CONF_EMAIL], user_input[CONF_PASSWORD]
+            )
+            if backend is not None:
+                return self.async_update_reload_and_abort(
+                    entry,
+                    data_updates={
+                        CONF_PASSWORD: user_input[CONF_PASSWORD],
+                        CONF_BACKEND: backend,
+                    },
+                )
 
-                    new_options[CONF_INTERVAL] = user_input.pop(CONF_INTERVAL)
-                    new_options["sensors"] = selected
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): _PASSWORD_SELECTOR}),
+            description_placeholders={"email": entry.data[CONF_EMAIL]},
+            errors=errors,
+        )
 
-                    self.hass.config_entries.async_update_entry(self.entry, data=new_data)
-                    return self.async_create_entry(title="", data=new_options)
-                except Exception as err:
-                    if "401" in str(err) or "unauthorized" in str(err).lower():
-                        errors["base"] = "invalid_auth"
-                    else:
-                        errors["base"] = "cannot_connect"
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Change the email address or password of the configured account."""
+        entry = self._get_reconfigure_entry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            email = user_input[CONF_EMAIL].strip()
+            await self.async_set_unique_id(email.lower())
+            self._abort_if_unique_id_mismatch(reason="wrong_account")
+            backend, errors = await _validate(
+                self.hass, email, user_input[CONF_PASSWORD]
+            )
+            if backend is not None:
+                return self.async_update_reload_and_abort(
+                    entry,
+                    data_updates={
+                        CONF_EMAIL: email,
+                        CONF_PASSWORD: user_input[CONF_PASSWORD],
+                        CONF_BACKEND: backend,
+                    },
+                )
 
-        coordinator = self.hass.data.get(DOMAIN, {}).get(self.entry.entry_id)
-        current_sensors = self.entry.options.get("sensors", [])
-        current_interval = self.entry.options.get(CONF_INTERVAL, DEFAULT_INTERVAL)
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=self.add_suggested_values_to_schema(
+                _CREDENTIALS_SCHEMA, {CONF_EMAIL: entry.data[CONF_EMAIL]}
+            ),
+            errors=errors,
+        )
 
-        schema_dict = {
-            vol.Optional(CONF_PASSWORD): str,
-            vol.Required(CONF_INTERVAL, default=current_interval): cv.positive_int,
-        }
 
-        display_data = {}
-        try:
-            if coordinator and hasattr(coordinator, 'data') and coordinator.data:
-                device_values = list(coordinator.data.values())
-                if device_values:
-                    display_data = _get_combined_states(device_values)
-        except Exception:
-            display_data = {}
+class MopekaOptionsFlow(OptionsFlow):
+    """Handle Mopeka HA options."""
 
-        for s in sorted(STATIC_SENSORS):
-            val = display_data.get(s, "n/a")
-            display_label = f"{s} ({val})"
-            schema_dict[vol.Optional(display_label, default=s in current_sensors)] = bool
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit the poll interval and the tanks to leave out."""
+        entry: MopekaConfigEntry = self.config_entry
+        if user_input is not None:
+            return self.async_create_entry(
+                data={
+                    **entry.options,
+                    CONF_UPDATE_INTERVAL: int(user_input[CONF_UPDATE_INTERVAL]),
+                    CONF_EXCLUDED_DEVICES: user_input.get(CONF_EXCLUDED_DEVICES, []),
+                }
+            )
 
-        return self.async_show_form(step_id="init", data_schema=vol.Schema(schema_dict), errors=errors)
+        account = (
+            entry.runtime_data.data
+            if entry.state is ConfigEntryState.LOADED
+            else MopekaAccountData()
+        )
+        excluded: list[str] = list(entry.options.get(CONF_EXCLUDED_DEVICES, []))
+        device_choices = [
+            SelectOptionDict(value=address, label=device.display_name)
+            for address, device in sorted(
+                account.devices.items(), key=lambda item: item[1].display_name
+            )
+        ]
+        # Keep exclusions for devices that are no longer on the account.
+        device_choices += [
+            SelectOptionDict(value=address, label=address)
+            for address in excluded
+            if address not in account.devices
+        ]
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_UPDATE_INTERVAL,
+                    default=update_interval_minutes(entry.options),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=MIN_UPDATE_INTERVAL,
+                        max=MAX_UPDATE_INTERVAL,
+                        step=1,
+                        mode=NumberSelectorMode.BOX,
+                        unit_of_measurement="min",
+                    )
+                ),
+                vol.Optional(CONF_EXCLUDED_DEVICES, default=excluded): SelectSelector(
+                    SelectSelectorConfig(
+                        options=device_choices,
+                        multiple=True,
+                        mode=SelectSelectorMode.LIST,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)

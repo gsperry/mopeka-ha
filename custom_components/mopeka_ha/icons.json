@@ -1,0 +1,15 @@
+{
+  "entity": {
+    "sensor": {
+      "level": {
+        "default": "mdi:propane-tank"
+      },
+      "fill_percent": {
+        "default": "mdi:gauge"
+      },
+      "signal_quality": {
+        "default": "mdi:signal"
+      }
+    }
+  }
+}

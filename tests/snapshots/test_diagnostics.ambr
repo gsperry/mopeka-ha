@@ -1,0 +1,69 @@
+# serializer version: 1
+# name: test_diagnostics_snapshot
+  dict({
+    'backend': 'legacy',
+    'devices': list([
+      dict({
+        'device': 'device_1',
+        'excluded': False,
+        'info': dict({
+          'address': '**REDACTED**',
+          'model_number': 'M1017',
+          'name': '**REDACTED**',
+          'propane_butane_ratio': 1.0,
+          'tank_height': 0.3,
+          'tank_type': '20lb',
+          'vertical': True,
+        }),
+        'reading': dict({
+          'battery_voltage': 2.94,
+          'gateway_id': '**REDACTED**',
+          'level_m': 0.167,
+          'level_offset_m': 0.017,
+          'quality': 3.0,
+          'raw_quality': None,
+          'temperature_c': 21.0,
+          'timestamp': '2025-11-01T12:26:40+00:00',
+        }),
+      }),
+      dict({
+        'device': 'device_2',
+        'excluded': False,
+        'info': dict({
+          'address': '**REDACTED**',
+          'model_number': 'M1017',
+          'name': '**REDACTED**',
+          'propane_butane_ratio': 1.0,
+          'tank_height': 0.9,
+          'tank_type': '100gal',
+          'vertical': False,
+        }),
+        'reading': dict({
+          'battery_voltage': 2.71,
+          'gateway_id': '**REDACTED**',
+          'level_m': 0.467,
+          'level_offset_m': 0.017,
+          'quality': 3.0,
+          'raw_quality': None,
+          'temperature_c': 8.0,
+          'timestamp': '2025-11-01T12:26:40+00:00',
+        }),
+      }),
+    ]),
+    'entry': dict({
+      'data': dict({
+        'backend': 'legacy',
+        'email': '**REDACTED**',
+        'password': '**REDACTED**',
+      }),
+      'options': dict({
+        'update_interval': 5,
+      }),
+      'title': '**REDACTED**',
+      'unique_id': '**REDACTED**',
+      'version': '1.2',
+    }),
+    'last_update_success': True,
+    'update_interval_s': 300.0,
+  })
+# ---

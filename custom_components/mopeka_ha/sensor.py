@@ -1,158 +1,170 @@
-"""Mopeka HA Sensors."""
-import logging
-import re
+"""Sensor platform for Mopeka HA."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
+    SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers import entity_registry as er
+from homeassistant.const import (
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfElectricPotential,
+    UnitOfLength,
+    UnitOfTemperature,
+    UnitOfVolume,
+)
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.util import slugify
 
-from . import DOMAIN
+from .const import DOMAIN
+from .coordinator import MopekaConfigEntry, MopekaCoordinator
+from .models import MopekaTank, parse_tank_type
 
-_LOGGER = logging.getLogger(__name__)
 
-DEVICE_INFO_FIELDS = {"device_id", "wifi_gate_id", "brand", "model_number", "name", "timestamp_iso", "history_start_date", "history_depth_days"}
+@dataclass(frozen=True, kw_only=True)
+class MopekaSensorEntityDescription(SensorEntityDescription):
+    """Describes a Mopeka tank sensor."""
 
-MAP = {
-    "tank_height": ("m", "ruler", None),
-    "temperature_c": ("C", "thermometer", None),
-    "temperature_f": ("F", "thermometer", None),
-    "battery_voltage": ("V", "battery", SensorDeviceClass.VOLTAGE),
-    "signal_quality": ("%", "signal", None),
-    "level_cm": ("cm", "ruler", None),
-    "level_inches": ("in", "ruler", None),
-    "fill_percent": ("%", "percent", None),
-    "volume_liters": ("L", "water", None),
-    "volume_gallons_us": ("gal", "water", None),
-}
+    value_fn: Callable[[MopekaTank], float | datetime | None]
+    # Whether a tank can ever report this value. Tanks on the current platform
+    # have no size settings, so they never report fill or volume.
+    exists_fn: Callable[[MopekaTank], bool] = lambda _: True
 
-def get_config(key, val):
-    if isinstance(val, bool):
-        return None, "check-circle", None, None
-    if isinstance(val, str):
-        return None, "text", None, None
-    if key in MAP:
-        unit, icon, device_class = MAP[key]
-        return unit, icon, device_class, SensorStateClass.MEASUREMENT if unit else None
-    return None, "information", None, None
 
-def _sensor_key_from_unique_id(unique_id, known_sensor_keys):
-    for sensor_key in sorted(known_sensor_keys, key=len, reverse=True):
-        suffix = f"_{sensor_key}"
-        if unique_id.endswith(suffix):
-            return sensor_key
-    return None
+SENSORS: tuple[MopekaSensorEntityDescription, ...] = (
+    MopekaSensorEntityDescription(
+        key="level",
+        translation_key="level",
+        native_unit_of_measurement=UnitOfLength.MILLIMETERS,
+        device_class=SensorDeviceClass.DISTANCE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_fn=lambda tank: tank.level_mm,
+    ),
+    MopekaSensorEntityDescription(
+        key="fill_percent",
+        translation_key="fill_percent",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
+        value_fn=lambda tank: tank.fill_percent,
+        exists_fn=lambda tank: bool(tank.device.tank_height),
+    ),
+    MopekaSensorEntityDescription(
+        key="volume",
+        translation_key="volume",
+        native_unit_of_measurement=UnitOfVolume.LITERS,
+        device_class=SensorDeviceClass.VOLUME_STORAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_fn=lambda tank: tank.volume_litres,
+        exists_fn=lambda tank: (
+            bool(tank.device.tank_height)
+            and parse_tank_type(tank.device.tank_type)[0] is not None
+        ),
+    ),
+    MopekaSensorEntityDescription(
+        key="temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=0,
+        value_fn=lambda tank: tank.temperature_c,
+    ),
+    MopekaSensorEntityDescription(
+        key="battery",
+        native_unit_of_measurement=PERCENTAGE,
+        device_class=SensorDeviceClass.BATTERY,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda tank: tank.battery_percent,
+    ),
+    MopekaSensorEntityDescription(
+        key="battery_voltage",
+        translation_key="battery_voltage",
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        suggested_display_precision=2,
+        value_fn=lambda tank: tank.battery_voltage,
+    ),
+    MopekaSensorEntityDescription(
+        key="last_reading",
+        translation_key="last_reading",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda tank: tank.last_reading,
+    ),
+    MopekaSensorEntityDescription(
+        key="signal_quality",
+        translation_key="signal_quality",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda tank: tank.signal_quality,
+    ),
+)
 
-async def async_setup_entry(hass, entry, async_add_entities):
-    coordinator = hass.data[DOMAIN][entry.entry_id]
-    selected = entry.options.get("sensors", [])
-    device_registry = dr.async_get(hass)
-    entity_registry = er.async_get(hass)
 
-    existing_entries = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
-    
-    all_possible_keys = set(MAP.keys()) | {
-        "updated_human_readable", "vertical", "propaneButaneRatio", 
-        "tank_type", "volume_original_unit", "tank_height"
-    }
-    
-    for ent in existing_entries:
-        s_key = _sensor_key_from_unique_id(ent.unique_id, all_possible_keys)
-        if s_key and s_key not in selected:
-            entity_registry.async_remove(ent.entity_id)
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: MopekaConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+) -> None:
+    """Create sensors for each tank with a cloud reading."""
+    coordinator = entry.runtime_data
+    async_add_entities(
+        MopekaSensor(coordinator, address, description)
+        for address, tank in coordinator.data.tanks.items()
+        for description in SENSORS
+        if description.exists_fn(tank)
+    )
 
-    for device_id, data in coordinator.data.items():
-        api_name = data.get("name")
-        if not api_name:
-            continue
 
-        device = device_registry.async_get_device(identifiers={(DOMAIN, device_id)})
-        if device and device.name != api_name:
-            device_registry.async_update_device(device.id, name=api_name)
+class MopekaSensor(CoordinatorEntity[MopekaCoordinator], SensorEntity):
+    """One measurement of one Mopeka tank."""
 
-        if not device:
-            continue
+    _attr_has_entity_name = True
+    entity_description: MopekaSensorEntityDescription
 
-        known_sensor_keys = set(selected)
-        known_sensor_keys.update(k for k in data if k not in DEVICE_INFO_FIELDS)
-
-        new_prefix = slugify(api_name) or ""
-        if not new_prefix:
-            _LOGGER.debug("Skipping device %s: empty slugified name", device_id)
-            continue
-            
-        entity_entries = er.async_entries_for_device(entity_registry, device.id, include_disabled_entities=True)
-
-        for entity_entry in entity_entries:
-            if entity_entry.domain != "sensor":
-                continue
-            if not entity_entry.unique_id:
-                continue
-
-            sensor_key = _sensor_key_from_unique_id(entity_entry.unique_id, known_sensor_keys)
-            if not sensor_key:
-                continue
-            
-            if sensor_key not in selected:
-                continue
-
-            safe_sensor_key = slugify(sensor_key)
-            expected_entity_id = f"sensor.{new_prefix}_{safe_sensor_key}"
-            
-            if entity_entry.entity_id == expected_entity_id:
-                continue
-            if entity_registry.async_is_registered(expected_entity_id):
-                continue
-
-            try:
-                entity_registry.async_update_entity(entity_entry.entity_id, new_entity_id=expected_entity_id)
-            except ValueError as e:
-                _LOGGER.debug("Could not update entity ID %s to %s: %s", entity_entry.entity_id, expected_entity_id, e)
-
-    entities = []
-    for device_id, device_data in coordinator.data.items():
-        for sensor_key in selected:
-            if sensor_key in device_data:
-                entities.append(MopekaSensor(coordinator, device_id, sensor_key))
-    async_add_entities(entities)
-
-class MopekaSensor(CoordinatorEntity, SensorEntity):
-    def __init__(self, coordinator, device_id, sensor_key):
+    def __init__(
+        self,
+        coordinator: MopekaCoordinator,
+        address: str,
+        description: MopekaSensorEntityDescription,
+    ) -> None:
+        """Initialize the sensor."""
         super().__init__(coordinator)
-        self._dev_id = device_id
-        self._key = sensor_key
-        device_data = coordinator.data.get(device_id, {})
-        unit, icon, device_class, state_class = get_config(sensor_key, device_data.get(sensor_key))
-        self._attr_unique_id = f"{device_id}_{sensor_key}"
-        self._attr_native_unit_of_measurement = unit
-        self._attr_device_class = device_class
-        self._attr_state_class = state_class
-        self._attr_icon = f"mdi:{icon}"
-        self._attr_has_entity_name = True
-
-    @property
-    def name(self):
-        return re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", self._key).replace("_", " ").title()
-
-    @property
-    def device_info(self):
-        data = self.coordinator.data.get(self._dev_id, {})
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._dev_id)},
-            name=data.get("name"),
-            manufacturer=data.get("brand"),
-            model=str(data.get("model_number")),
-            serial_number=data.get("device_id"),
-            hw_version=data.get("wifi_gate_id"),
+        self.entity_description = description
+        self._address = address
+        self._attr_unique_id = f"{address}_{description.key}"
+        device = coordinator.data.tanks[address].device
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, address)},
+            name=device.display_name,
+            manufacturer="Mopeka",
+            model=device.model_number,
+            serial_number=address,
         )
 
     @property
-    def native_value(self):
-        device_data = self.coordinator.data.get(self._dev_id, {})
-        return device_data.get(self._key)
+    def available(self) -> bool:
+        """Return False while the tank is missing from the cloud response."""
+        return super().available and self._address in self.coordinator.data.tanks
+
+    @property
+    def native_value(self) -> float | datetime | None:
+        """Return the current value."""
+        tank = self.coordinator.data.tanks.get(self._address)
+        return self.entity_description.value_fn(tank) if tank else None

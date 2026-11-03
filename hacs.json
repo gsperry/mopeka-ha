@@ -1,8 +1,7 @@
 {
   "name": "Mopeka HA",
   "render_readme": true,
-  "homeassistant": "2024.1.0",
-  "country": ["US", "MX"],
-  "zip_release": false,
-  "filename": "mopeka_ha"
+  "homeassistant": "2026.9.0",
+  "zip_release": true,
+  "filename": "mopeka_ha.zip"
 }

@@ -30,7 +30,6 @@ from custom_components.mopeka_ha.const import (
     BACKEND_LEGACY,
     BACKEND_RETAIL,
     CONF_BACKEND,
-    CONF_SENSORS,
     CURRENT_POOL,
     DOMAIN,
     EMPTY_RETAIL_SYNC,
@@ -88,7 +87,8 @@ def _entry(hass: HomeAssistant, **data: Any) -> MockConfigEntry:
         title=EMAIL,
         unique_id=EMAIL,
         data={CONF_EMAIL: EMAIL, CONF_PASSWORD: PASSWORD, **data},
-        options={CONF_SENSORS: ["level_inches", "temperature_c", "battery_voltage"]},
+        version=1,
+        minor_version=2,
     )
     entry.add_to_hass(hass)
     return entry
@@ -144,23 +144,19 @@ async def test_parsed_values(hass: HomeAssistant, cloud: FakeCloud) -> None:
     """Samples become readings with converted level, temperature, and battery."""
     data = await _client(hass).get_account_data()
     tank = data.tanks[MAC_A]
-    values = tank.values()
 
     assert tank.device.display_name == "Mopeka 6F01"
-    assert tank.reading is not None
-    assert tank.reading.timestamp is not None
-    assert tank.reading.timestamp.timestamp() == 1_793_667_625
-    assert tank.reading.raw_quality == 251
-    assert values["level_cm"] == 38.4
-    assert values["level_inches"] == 15.13
-    assert values["temperature_c"] == 6
-    assert values["temperature_f"] == 43
-    assert values["battery_voltage"] == 3.23
-    assert values["updated_human_readable"].endswith("ago")
+    assert tank.last_reading is not None
+    assert tank.last_reading.timestamp() == 1_793_667_625
+    assert tank.level_mm == 384.4
+    assert tank.temperature_c == 6
+    assert tank.battery_voltage == 3.234
+    assert tank.battery_percent == 100.0
+    assert tank.signal_quality == 251
     # The cloud has no tank settings, so these are unknown.
-    for key in ("fill_percent", "volume_liters", "tank_type", "tank_height"):
-        assert values[key] is None
-    assert data.tanks[MAC_B].values()["level_inches"] == 17.88
+    assert tank.fill_percent is None
+    assert tank.volume_litres is None
+    assert data.tanks[MAC_B].level_mm == 454.2
 
 
 async def test_latest_sample_wins(hass: HomeAssistant, cloud: FakeCloud) -> None:
@@ -196,9 +192,10 @@ async def test_sample_with_missing_fields(
     data = await _client(hass).get_account_data()
     tank = data.tanks[MAC_A]
     assert tank.reading is not None
-    assert tank.reading.timestamp is None
-    assert tank.values()["level_inches"] is None
-    assert tank.values()["battery_voltage"] is None
+    assert tank.last_reading is None
+    assert tank.level_mm is None
+    assert tank.battery_percent is None
+    assert tank.signal_quality is None
 
 
 async def test_tokens_reused_and_refreshed(
@@ -340,29 +337,22 @@ async def test_sync_debug_log_is_redacted(
 
 
 async def test_config_flow(hass: HomeAssistant, cloud: FakeCloud) -> None:
-    """Setup stores the platform and offers only measurements the tanks report."""
+    """Setup stores the platform and creates the tanks' sensors."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_EMAIL: EMAIL, CONF_PASSWORD: PASSWORD}
     )
-    assert result["step_id"] == "sensors"
-    selector = next(iter(result["data_schema"].schema.values()))
-    offered = {o["value"]: o["label"] for o in selector.config["options"]}
-    assert offered["level_inches"] == "level_inches (15.13)"
-    assert "fill_percent" not in offered
-    assert "tank_type" not in offered
-
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_SENSORS: ["level_inches", "temperature_c"]}
-    )
     await hass.async_block_till_done()
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_BACKEND] == BACKEND_RETAIL
-    assert hass.states.get("sensor.mopeka_6f01_level_inches").state == "15.13"
-    assert hass.states.get("sensor.mopeka_7502_level_inches").state == "17.88"
-    assert hass.states.get("sensor.mopeka_6f01_temperature_c").state == "6"
+    assert hass.states.get("sensor.mopeka_6f01_level").state == "384.4"
+    assert hass.states.get("sensor.mopeka_7502_level").state == "454.2"
+    assert hass.states.get("sensor.mopeka_6f01_temperature").state == "6.0"
+    # No tank sizes in the cloud, so no fill or volume sensors.
+    assert hass.states.get("sensor.mopeka_6f01_fill_level") is None
+    assert hass.states.get("sensor.mopeka_6f01_volume") is None
 
 
 async def test_existing_entry_learns_backend(
@@ -386,10 +376,10 @@ async def test_tank_drops_out(hass: HomeAssistant, cloud: FakeCloud) -> None:
     cloud.retail.devices[1]["samples"] = []
     await entry.runtime_data.async_refresh()
     await hass.async_block_till_done()
-    assert hass.states.get("sensor.mopeka_7502_level_inches").state == STATE_UNAVAILABLE
-    assert hass.states.get("sensor.mopeka_6f01_level_inches").state == "15.13"
+    assert hass.states.get("sensor.mopeka_7502_level").state == STATE_UNAVAILABLE
+    assert hass.states.get("sensor.mopeka_6f01_level").state == "384.4"
 
     cloud.retail.devices[1]["samples"] = samples
     await entry.runtime_data.async_refresh()
     await hass.async_block_till_done()
-    assert hass.states.get("sensor.mopeka_7502_level_inches").state == "17.88"
+    assert hass.states.get("sensor.mopeka_7502_level").state == "454.2"

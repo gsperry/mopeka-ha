@@ -87,3 +87,12 @@ asyncio_mode = "auto"
 [tool.coverage.run]
 source = ["custom_components.mopeka_ha"]
 omit = ["tests/*"]
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["custom_components/mopeka_ha"]
+
+[[tool.mypy.overrides]]
+# pycognito ships no type information.
+module = ["pycognito.*"]
+ignore_missing_imports = true

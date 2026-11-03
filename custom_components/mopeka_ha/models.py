@@ -8,31 +8,9 @@ from __future__ import annotations
 
 import math
 import re
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
-
-# Measurement keys exposed as sensors. These are the keys used by releases
-# before the fork; they are part of each entity's unique ID, so they must not
-# change.
-MEASUREMENT_KEYS: Final = (
-    "battery_voltage",
-    "fill_percent",
-    "level_cm",
-    "level_inches",
-    "propaneButaneRatio",
-    "signal_quality",
-    "tank_height",
-    "tank_type",
-    "temperature_c",
-    "temperature_f",
-    "updated_human_readable",
-    "vertical",
-    "volume_gallons_us",
-    "volume_liters",
-    "volume_original_unit",
-)
 
 # Litres per unit of tank capacity, keyed by the unit in the app's tank type.
 _LITRES_PER_UNIT: Final = {
@@ -42,8 +20,11 @@ _LITRES_PER_UNIT: Final = {
     "us_gal": 3.78541,
     "imp_gal": 4.54609,
 }
-_LITRES_PER_US_GALLON: Final = 3.78541
-_INCHES_PER_METRE: Final = 39.3701
+
+# Battery voltage range mapped to 0-100 %, as in Home Assistant's Bluetooth
+# Mopeka integration.
+_BATTERY_EMPTY_V: Final = 2.2
+_BATTERY_SPAN_V: Final = 0.65
 
 # Offset subtracted from the older platform's level reading, in metres. Carried
 # over from the upstream client; its origin is undocumented.
@@ -262,26 +243,12 @@ def calculate_fill_percent(level: float, height: float, vertical: bool) -> float
     return round((cylinder + heads) / full * 100.0, 2)
 
 
-def _human_age(timestamp: datetime | None, now: float) -> str | None:
-    if timestamp is None:
-        return None
-    age = int(now - timestamp.timestamp())
-    if age < 60:
-        return "Just now"
-    if age < 3600:
-        return f"{age // 60} min ago"
-    if age < 86400:
-        return f"{age // 3600} hours ago"
-    return f"{age // 86400} days ago"
-
-
 @dataclass(frozen=True, slots=True)
 class MopekaTank:
     """A device together with its latest reading."""
 
     device: MopekaDevice
     reading: MopekaReading | None = None
-    _now: float = field(default_factory=time.time, compare=False, repr=False)
 
     @property
     def level_m(self) -> float | None:
@@ -309,36 +276,41 @@ class MopekaTank:
             return None
         return round(capacity * fill / 100.0 * _LITRES_PER_UNIT.get(unit, 1.0), 2)
 
-    def values(self) -> dict[str, Any]:
-        """Return every measurement, keyed by MEASUREMENT_KEYS."""
-        reading = self.reading
+    @property
+    def level_mm(self) -> float | None:
+        """Return the liquid level in millimetres."""
         level = self.level_m
-        litres = self.volume_litres
-        temp_c = reading.temperature_c if reading else None
-        battery = reading.battery_voltage if reading else None
-        quality = reading.quality if reading else None
-        return {
-            "battery_voltage": round(battery, 2) if battery is not None else None,
-            "fill_percent": self.fill_percent,
-            "level_cm": round(level * 100.0, 1) if level is not None else None,
-            "level_inches": (
-                round(level * _INCHES_PER_METRE, 2) if level is not None else None
-            ),
-            "propaneButaneRatio": self.device.propane_butane_ratio,
-            "signal_quality": int(quality) if quality is not None else None,
-            "tank_height": self.device.tank_height,
-            "tank_type": self.device.tank_type,
-            "temperature_c": int(temp_c) if temp_c is not None else None,
-            "temperature_f": (
-                int(round(temp_c * 9 / 5 + 32)) if temp_c is not None else None
-            ),
-            "updated_human_readable": _human_age(
-                reading.timestamp if reading else None, self._now
-            ),
-            "vertical": self.device.vertical,
-            "volume_gallons_us": (
-                round(litres / _LITRES_PER_US_GALLON, 2) if litres is not None else None
-            ),
-            "volume_liters": litres,
-            "volume_original_unit": parse_tank_type(self.device.tank_type)[1],
-        }
+        return round(level * 1000, 1) if level is not None else None
+
+    @property
+    def temperature_c(self) -> float | None:
+        """Return the temperature at the sensor, in degrees Celsius."""
+        return self.reading.temperature_c if self.reading else None
+
+    @property
+    def battery_voltage(self) -> float | None:
+        """Return the sensor's battery voltage."""
+        return self.reading.battery_voltage if self.reading else None
+
+    @property
+    def battery_percent(self) -> float | None:
+        """Return the battery level, in percent, estimated from its voltage."""
+        voltage = self.battery_voltage
+        if voltage is None:
+            return None
+        percent = (voltage - _BATTERY_EMPTY_V) / _BATTERY_SPAN_V * 100
+        return round(max(0.0, min(100.0, percent)), 1)
+
+    @property
+    def last_reading(self) -> datetime | None:
+        """Return when the sensor took its latest reading."""
+        return self.reading.timestamp if self.reading else None
+
+    @property
+    def signal_quality(self) -> float | None:
+        """Return the reading's quality value, on the platform's own scale."""
+        if self.reading is None:
+            return None
+        if self.reading.quality is not None:
+            return self.reading.quality
+        return self.reading.raw_quality

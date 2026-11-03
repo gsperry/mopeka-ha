@@ -3,22 +3,15 @@
     "step": {
       "user": {
         "title": "Iniciar sesión en Mopeka",
-        "description": "Introduce el correo electrónico y la contraseña que usas en la aplicación Tank Check.",
+        "description": "Introduce el correo electrónico y la contraseña que usas en la aplicación Mopeka Co-Pilot o Tank Check.",
         "data": {
           "email": "Correo electrónico",
           "password": "Contraseña"
         }
       },
-      "sensors": {
-        "title": "Elegir mediciones",
-        "description": "Elige qué mediciones crear como entidades para cada tanque. Los valores actuales aparecen entre paréntesis.",
-        "data": {
-          "sensors": "Mediciones"
-        }
-      },
       "reauth_confirm": {
         "title": "Volver a iniciar sesión en Mopeka",
-        "description": "Mopeka ya no acepta la contraseña guardada para {email}. Introduce la contraseña que usas en la aplicación Tank Check.",
+        "description": "Mopeka ya no acepta la contraseña guardada para {email}. Introduce la contraseña que usas en la aplicación Mopeka.",
         "data": {
           "password": "Contraseña"
         }
@@ -34,9 +27,8 @@
     },
     "error": {
       "cannot_connect": "No se puede conectar con Mopeka Cloud. Comprueba que Home Assistant tiene acceso a internet e inténtalo de nuevo. El registro de Home Assistant tiene más detalles.",
-      "invalid_auth": "Mopeka no aceptó este correo electrónico y contraseña. Comprueba que funcionan en la aplicación Tank Check. El registro de Home Assistant tiene más detalles.",
-      "unknown": "Error inesperado. El registro de Home Assistant tiene más detalles.",
-      "no_sensors_selected": "Selecciona al menos una medición."
+      "invalid_auth": "Mopeka no aceptó este correo electrónico y contraseña. Comprueba que funcionan en la aplicación Mopeka. El registro de Home Assistant tiene más detalles.",
+      "unknown": "Error inesperado. El registro de Home Assistant tiene más detalles."
     },
     "abort": {
       "already_configured": "Esta cuenta de Mopeka ya está configurada.",
@@ -51,18 +43,35 @@
         "title": "Opciones de Mopeka",
         "data": {
           "update_interval": "Intervalo de actualización",
-          "excluded_devices": "Tanques que no se añaden",
-          "sensors": "Mediciones"
+          "excluded_devices": "Tanques que no se añaden"
         },
         "data_description": {
           "update_interval": "Cada cuántos minutos se consultan nuevas lecturas en Mopeka Cloud.",
-          "excluded_devices": "Los tanques seleccionados aquí no se añaden a Home Assistant. Úsalo para tanques que ya proporciona la integración Bluetooth de Mopeka integrada.",
-          "sensors": "Mediciones que se crean como entidades para cada tanque."
+          "excluded_devices": "Los tanques seleccionados aquí no se añaden a Home Assistant. Úsalo para tanques que ya proporciona la integración Bluetooth de Mopeka integrada."
         }
       }
-    },
-    "error": {
-      "no_sensors_selected": "Selecciona al menos una medición."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "level": {
+        "name": "Nivel"
+      },
+      "fill_percent": {
+        "name": "Nivel de llenado"
+      },
+      "volume": {
+        "name": "Volumen"
+      },
+      "battery_voltage": {
+        "name": "Tensión de la batería"
+      },
+      "last_reading": {
+        "name": "Última lectura"
+      },
+      "signal_quality": {
+        "name": "Calidad de la lectura"
+      }
     }
   }
 }

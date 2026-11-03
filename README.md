@@ -44,7 +44,7 @@ Mopeka sensor models that report to the same account may work, but they are unte
 
 ## Requirements
 
-- Home Assistant with [HACS](https://hacs.xyz/) installed.
+- Home Assistant 2026.9 or newer, with [HACS](https://hacs.xyz/) installed.
 - A Mopeka Co-Pilot or Tank Check account that signs in with an email address and
   password. Accounts that use only Sign in with Apple or Google have no password to enter
   here.
@@ -82,14 +82,11 @@ All configuration is done in the UI. There is no YAML configuration.
 1. Go to **Settings > Devices & services** and select **Add integration**.
 2. Search for **Mopeka HA**.
 3. Enter the email address and password you use for the Mopeka app.
-4. Choose which measurements to create as entities. The form shows the current value of
-   each one so you can see what your sensors report. Select at least one.
 
 Each tank on the account becomes a device. Tank Check accounts use the names from the app.
 Co-Pilot keeps tank names on your phone rather than in the cloud, so those tanks are named
 `Mopeka` plus the last four characters of the sensor's address, such as `Mopeka 6F01`.
-Rename them in Home Assistant if you like. Each selected measurement becomes a sensor entity
-on that device.
+Rename them in Home Assistant if you like. Each tank's sensors are listed under its device.
 
 You can add more than one Mopeka account. Each account is a separate integration entry.
 
@@ -101,11 +98,10 @@ Open the integration entry and select **Configure** to change:
 |---|---|---|
 | Update interval | How often to poll Mopeka Cloud, in minutes (1 to 60). | 5 |
 | Tanks to leave out | Tanks not to add to Home Assistant, for example tanks the built-in Mopeka Bluetooth integration already provides. Their devices and entities are removed. | None |
-| Measurements | Which measurements to create as entities. Deselecting one removes its entity. | As chosen during setup |
 
 ### Changing your password or email
 
-- If you change your password in the Tank Check app, Home Assistant notices the next
+- If you change your password in the Mopeka app, Home Assistant notices the next
   time it polls. **Settings > Devices & services** then shows Mopeka HA as needing
   attention; select **Reconfigure** on it and enter the new password.
 - To change the email address for the same Mopeka account, use **Reconfigure**. To add a
@@ -113,30 +109,42 @@ Open the integration entry and select **Configure** to change:
 
 ## Entities
 
-Entities are created only for the measurements you select. Each is created on every tank
-that reports that measurement, and setup only offers measurements your tanks report.
+Each tank with a cloud reading gets these sensors. Units follow your Home Assistant unit
+system, so level shows in inches and temperature in °F on a US system. You can change the
+unit of any sensor in its settings.
+
+| Sensor | Description |
+|---|---|
+| Level | Height of the liquid in the tank, calculated from the sensor's reading. |
+| Fill level | How full the tank is, in percent, from the level and the tank's size and orientation. Tank Check accounts only. |
+| Volume | Estimated liquid volume, from the fill level and the tank type set in the app. Tank Check accounts only. |
+| Temperature | Temperature at the sensor. |
+| Battery | Sensor battery level, estimated from its voltage. Diagnostic. |
+| Last reading | When the sensor took its latest reading. Diagnostic. |
+| Battery voltage | Sensor battery voltage. Diagnostic, disabled by default. |
+| Reading quality | Mopeka's quality value for the reading. Its scale depends on the platform. Diagnostic, disabled by default. |
+
+Disabled sensors can be enabled from the device page.
 
 For **Co-Pilot accounts**, Mopeka Cloud stores the readings but not the tank settings, so
-level, temperature, battery voltage, and last update are available. Fill percentage,
-volume, and tank details need the tank's size, which the cloud does not provide.
+fill level and volume are not available.
 
-| Measurement | Unit | Description |
-|---|---|---|
-| `fill_percent` | % | How full the tank is. Calculated by the integration from the liquid level and the tank size and orientation. Tank Check accounts only. |
-| `level_cm` | cm | Liquid level. |
-| `level_inches` | in | Liquid level. |
-| `volume_liters` | L | Estimated liquid volume, based on the tank type set in the app. |
-| `volume_gallons_us` | gal | Estimated liquid volume, based on the tank type set in the app. |
-| `volume_original_unit` | | Unit of the tank capacity set in the app, such as `lb` or `l`. |
-| `tank_type` | | Tank type set in the app, such as `20lb`. |
-| `tank_height` | m | Tank height used for the level calculation. |
-| `vertical` | | `True` for a vertical tank, `False` for a horizontal tank. |
-| `propaneButaneRatio` | | Propane/butane mix set in the app. |
-| `temperature_c` | °C | Temperature at the sensor. |
-| `temperature_f` | °F | Temperature at the sensor. |
-| `battery_voltage` | V | Sensor battery voltage. |
-| `signal_quality` | % | Quality of the sensor's ultrasonic reading. Low values mean the level reading may be unreliable. |
-| `updated_human_readable` | | How long ago the sensor last reported, as text (for example `5 min ago`). |
+### Upgrading from version 1.x
+
+Version 2.0 replaces the list of measurements chosen during setup with the sensors above.
+Existing entities keep their entity IDs and history:
+
+- `level_cm` or `level_inches` becomes Level, and `temperature_c` or `temperature_f`
+  becomes Temperature, still shown in the unit you had. If you had both units, the one
+  matching your unit system is kept and the other removed.
+- `volume_liters` or `volume_gallons_us` becomes Volume, and `updated_human_readable`
+  becomes Last reading.
+- `tank_type`, `tank_height`, `vertical`, `propaneButaneRatio`, and
+  `volume_original_unit` are removed.
+
+Long-term statistics for temperature and reading quality may report a unit change once,
+because version 1.x used `C` and `F` instead of `°C` and `°F`, and showed reading quality
+as a percentage. Home Assistant offers to fix this under **Developer tools > Statistics**.
 
 ## Limitations
 
@@ -148,7 +156,8 @@ volume, and tank details need the tank's size, which the cloud does not provide.
   value appears in Home Assistant only after the gateway has uploaded it *and* the next
   poll has run, so readings can lag behind the sensor. Gateways upload on their own
   schedule, and a cellular bridge may upload less often than a Wi-Fi gateway.
-- **Calculated values.** Level is calculated from the sensor's raw echo time. Fill
+- **Calculated values.** Level is calculated from the sensor's raw echo time, using
+  the same propane conversion as Home Assistant's built-in Mopeka integration. Fill
   percentage and volume are calculated from the level and, for Tank Check accounts, the
   tank settings in the app.
 - **Bluetooth duplicates.** A sensor that is in your cloud account *and* in Bluetooth range
@@ -187,7 +196,7 @@ without debug logging.
 
 | Message | Meaning | What to do |
 |---|---|---|
-| Mopeka did not accept this email and password | Mopeka's sign-in service rejected the credentials, or the account needs a step such as a password reset or multi-factor code. | Sign in to the Tank Check app with the same details. Complete any step it asks for, then try again. |
+| Mopeka did not accept this email and password | Mopeka's sign-in service rejected the credentials, or the account needs a step such as a password reset or multi-factor code. | Sign in to the Mopeka app with the same details. Complete any step it asks for, then try again. |
 | Cannot reach Mopeka Cloud | A network error, a timeout, or a temporary problem or rate limit at Mopeka. | Check Home Assistant's internet access and try again in a few minutes. |
 | Unexpected error | Mopeka responded in a way the integration does not understand. | Collect a debug log and open an issue. |
 
@@ -195,14 +204,15 @@ The email address is matched without regard to capitalization or surrounding spa
 
 ### A tank is missing
 
-- Check that the tank appears in the Tank Check app and shows recent readings.
+- Check that the tank appears in the Mopeka app and shows recent readings.
 - Tanks that have never uploaded a reading to the cloud are skipped.
-- Entities are created only for measurements you selected. Open **Configure** to add more.
+- Check that the tank is not selected under **Tanks to leave out** in **Configure**.
 
 ### Values are not updating
 
-- Compare the `updated_human_readable` value with the app. If the app is also out of
-  date, the gateway is not uploading. Check the gateway's power and connection.
+- Compare the tank's **Last reading** sensor with the app. If the app is also out of
+  date, the sensor's readings are not reaching the cloud. Check the bridge's power and
+  connection, or open the app near the sensor.
 - Check the Home Assistant log for errors from `custom_components.mopeka_ha`.
 
 ### Checking your account outside Home Assistant

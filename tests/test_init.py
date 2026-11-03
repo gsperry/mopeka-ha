@@ -18,7 +18,6 @@ from pytest_homeassistant_custom_component.common import (
 from custom_components.mopeka_ha import async_remove_config_entry_device
 from custom_components.mopeka_ha.const import (
     CONF_EXCLUDED_DEVICES,
-    CONF_SENSORS,
     CONF_UPDATE_INTERVAL,
     DOMAIN,
 )
@@ -81,12 +80,12 @@ async def test_poll_reuses_token_and_survives_outage(
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
     assert coordinator.last_update_success is False
-    assert hass.states.get("sensor.tank_a_fill_percent").state == "unavailable"
+    assert hass.states.get("sensor.tank_a_fill_level").state == "unavailable"
 
     await coordinator.async_refresh()
     await hass.async_block_till_done()
     assert coordinator.last_update_success is True
-    assert hass.states.get("sensor.tank_a_fill_percent").state == "50.0"
+    assert hass.states.get("sensor.tank_a_fill_level").state == "50.0"
     assert fake_cloud.cognito.count("InitiateAuth", "USER_SRP_AUTH") == 1
 
 
@@ -125,7 +124,7 @@ def test_update_interval(options: dict[str, Any], minutes: int) -> None:
 
 @pytest.mark.parametrize(
     "entry_options",
-    [{CONF_SENSORS: ["fill_percent"], CONF_EXCLUDED_DEVICES: [ADDRESS_B]}],
+    [{CONF_UPDATE_INTERVAL: 5, CONF_EXCLUDED_DEVICES: [ADDRESS_B]}],
 )
 async def test_excluded_device_is_removed(
     hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry

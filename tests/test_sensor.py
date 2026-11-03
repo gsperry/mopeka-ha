@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import pytest
-from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.mopeka_ha.const import CONF_SENSORS, DOMAIN
-from custom_components.mopeka_ha.models import MEASUREMENT_KEYS
+from custom_components.mopeka_ha.const import DOMAIN
 
-from .conftest import ADDRESS_A, ADDRESS_B
+from .conftest import ADDRESS_A
 from .fake_cloud import FakeCloud, make_device, make_reading
 
 
@@ -24,32 +24,75 @@ async def _setup(hass: HomeAssistant, entry: MockConfigEntry) -> None:
 async def test_sensor_states(
     hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
 ) -> None:
-    """Selected measurements are created for each tank with correct values."""
+    """Each tank gets level, fill, volume, temperature, battery, and last reading."""
     await _setup(hass, config_entry)
 
-    assert hass.states.get("sensor.tank_a_fill_percent").state == "50.0"
-    assert hass.states.get("sensor.tank_a_battery_voltage").state == "2.94"
-    assert hass.states.get("sensor.tank_a_temperature_c").state == "21"
-    # Tank B is horizontal; half its height is half its volume.
-    assert hass.states.get("sensor.tank_b_fill_percent").state == "50.0"
-    assert hass.states.get("sensor.tank_b_temperature_c").state == "8"
-    # Measurements that were not selected are not created.
-    assert hass.states.get("sensor.tank_a_level_cm") is None
+    level = hass.states.get("sensor.tank_a_level")
+    assert level.state == "150.0"
+    assert level.attributes["unit_of_measurement"] == "mm"
+    assert level.attributes["device_class"] == "distance"
+    assert level.attributes["state_class"] == "measurement"
+    assert level.attributes["friendly_name"] == "Tank A Level"
 
-    battery = hass.states.get("sensor.tank_a_battery_voltage")
-    assert battery.attributes["unit_of_measurement"] == "V"
-    assert battery.attributes["device_class"] == "voltage"
-    assert battery.attributes["state_class"] == "measurement"
+    assert hass.states.get("sensor.tank_a_fill_level").state == "50.0"
+    assert hass.states.get("sensor.tank_a_volume").state == "9.25"
+    assert hass.states.get("sensor.tank_a_temperature").state == "21.0"
+    assert hass.states.get("sensor.tank_a_battery").state == "100.0"
+    assert (
+        hass.states.get("sensor.tank_a_last_reading").state
+        == "2025-11-01T12:26:40+00:00"
+    )
+    # Tank B is horizontal; half its height is half its volume.
+    assert hass.states.get("sensor.tank_b_level").state == "450.0"
+    assert hass.states.get("sensor.tank_b_fill_level").state == "50.0"
+    assert hass.states.get("sensor.tank_b_volume").state == "189.27"
+    assert hass.states.get("sensor.tank_b_battery").state == "78.5"
+
+
+async def test_diagnostic_and_disabled_entities(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """Battery and last reading are diagnostic; voltage and quality start disabled."""
+    await _setup(hass, config_entry)
+    registry = er.async_get(hass)
+
+    for entity_id in ("sensor.tank_a_battery", "sensor.tank_a_last_reading"):
+        entry = registry.async_get(entity_id)
+        assert entry.entity_category is EntityCategory.DIAGNOSTIC
+        assert entry.disabled_by is None
+    for entity_id in ("sensor.tank_a_battery_voltage", "sensor.tank_a_reading_quality"):
+        entry = registry.async_get(entity_id)
+        assert entry.entity_category is EntityCategory.DIAGNOSTIC
+        assert entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
+        assert hass.states.get(entity_id) is None
+
+
+async def test_us_customary_units(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """With US units, level shows in inches, temperature in °F, volume in gallons."""
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    await _setup(hass, config_entry)
+
+    level = hass.states.get("sensor.tank_a_level")
+    assert level.attributes["unit_of_measurement"] == "in"
+    assert float(level.state) == pytest.approx(150 / 25.4, abs=0.01)
+    temperature = hass.states.get("sensor.tank_a_temperature")
+    assert temperature.attributes["unit_of_measurement"] == "°F"
+    assert float(temperature.state) == pytest.approx(69.8, abs=0.1)
+    volume = hass.states.get("sensor.tank_a_volume")
+    assert volume.attributes["unit_of_measurement"] == "gal"
+    assert float(volume.state) == pytest.approx(9.25 / 3.78541, abs=0.01)
 
 
 async def test_unique_ids_and_device_info(
     hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
 ) -> None:
-    """Unique IDs keep the pre-fork format, and each tank is a device."""
+    """Unique IDs combine address and key, and each tank is a device."""
     await _setup(hass, config_entry)
 
-    entity = er.async_get(hass).async_get("sensor.tank_a_fill_percent")
-    assert entity.unique_id == f"{ADDRESS_A}_fill_percent"
+    entity = er.async_get(hass).async_get("sensor.tank_a_level")
+    assert entity.unique_id == f"{ADDRESS_A}_level"
 
     device = dr.async_get(hass).async_get_device_by_identifier(
         (DOMAIN, ADDRESS_A), config_entry.entry_id
@@ -61,26 +104,45 @@ async def test_unique_ids_and_device_info(
     assert entity.device_id == device.id
 
 
-@pytest.mark.parametrize("entry_options", [{CONF_SENSORS: list(MEASUREMENT_KEYS)}])
-async def test_every_measurement(
+async def test_tank_without_size(
     hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
 ) -> None:
-    """Every measurement can be created and has a value."""
+    """Without a height or capacity, fill and volume are not created."""
+    fake_cloud.gateway.devices.clear()
+    fake_cloud.gateway.add_tank(
+        make_device(ADDRESS_A, "Tank A", tank_height=None, tank_type="unknown"),
+        make_reading(),
+    )
     await _setup(hass, config_entry)
-    states = {
-        s.entity_id: s.state
-        for s in hass.states.async_all("sensor")
-        if s.entity_id.startswith("sensor.tank_a_")
-    }
-    assert len(states) == len(MEASUREMENT_KEYS)
-    assert STATE_UNKNOWN not in states.values()
-    assert states["sensor.tank_a_vertical"] == "True"
-    assert states["sensor.tank_a_tank_type"] == "20lb"
-    assert states["sensor.tank_a_volume_original_unit"] == "lb"
-    assert states["sensor.tank_a_level_cm"] == "15.0"
-    assert states["sensor.tank_a_temperature_f"] == "70"
-    assert states["sensor.tank_a_propane_butane_ratio"] == "1.0"
-    assert states["sensor.tank_a_updated_human_readable"].endswith("ago")
+    assert hass.states.get("sensor.tank_a_level").state == "150.0"
+    assert hass.states.get("sensor.tank_a_fill_level") is None
+    assert hass.states.get("sensor.tank_a_volume") is None
+
+
+async def test_tank_with_height_but_no_capacity(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """With a height but no capacity, fill is created but volume is not."""
+    fake_cloud.gateway.devices.clear()
+    fake_cloud.gateway.add_tank(
+        make_device(ADDRESS_A, "Tank A", tank_type="custom"), make_reading()
+    )
+    await _setup(hass, config_entry)
+    assert hass.states.get("sensor.tank_a_fill_level").state == "50.0"
+    assert hass.states.get("sensor.tank_a_volume") is None
+
+
+async def test_missing_values_are_unknown(
+    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
+) -> None:
+    """A reading without a value shows unknown, not an error."""
+    reading = make_reading()
+    del reading["Temp"], reading["BatteryLevel"]
+    fake_cloud.gateway.readings[ADDRESS_A] = [reading]
+    await _setup(hass, config_entry)
+    assert hass.states.get("sensor.tank_a_temperature").state == STATE_UNKNOWN
+    assert hass.states.get("sensor.tank_a_battery").state == STATE_UNKNOWN
+    assert hass.states.get("sensor.tank_a_level").state == "150.0"
 
 
 async def test_tank_drops_out_and_returns(
@@ -93,43 +155,10 @@ async def test_tank_drops_out_and_returns(
 
     await coordinator.async_refresh()
     await hass.async_block_till_done()
-    assert hass.states.get("sensor.tank_b_fill_percent").state == STATE_UNAVAILABLE
-    assert hass.states.get("sensor.tank_a_fill_percent").state == "50.0"
+    assert hass.states.get("sensor.tank_b_level").state == STATE_UNAVAILABLE
+    assert hass.states.get("sensor.tank_a_level").state == "150.0"
 
     fake_cloud.gateway.devices.append(tank_b)
     await coordinator.async_refresh()
     await hass.async_block_till_done()
-    assert hass.states.get("sensor.tank_b_fill_percent").state == "50.0"
-
-
-async def test_tank_without_height(
-    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
-) -> None:
-    """A tank with no height set shows fill as unknown instead of failing setup."""
-    fake_cloud.gateway.devices.clear()
-    fake_cloud.gateway.add_tank(
-        make_device(ADDRESS_A, "Tank A", tank_height=None, tank_type="unknown"),
-        make_reading(),
-    )
-    await _setup(hass, config_entry)
-    assert hass.states.get("sensor.tank_a_fill_percent").state == STATE_UNKNOWN
-    assert hass.states.get("sensor.tank_a_battery_voltage").state == "2.94"
-
-
-async def test_deselected_measurement_is_removed(
-    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
-) -> None:
-    """Entities for measurements removed in options are deleted on reload."""
-    await _setup(hass, config_entry)
-    registry = er.async_get(hass)
-    assert registry.async_get("sensor.tank_a_temperature_c") is not None
-
-    hass.config_entries.async_update_entry(
-        config_entry, options={CONF_SENSORS: ["fill_percent"]}
-    )
-    await hass.async_block_till_done()
-
-    assert registry.async_get("sensor.tank_a_temperature_c") is None
-    assert registry.async_get("sensor.tank_a_fill_percent") is not None
-    assert registry.async_get("sensor.tank_b_fill_percent") is not None
-    assert ADDRESS_B in config_entry.runtime_data.data.tanks
+    assert hass.states.get("sensor.tank_b_level").state == "450.0"

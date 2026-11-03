@@ -2,16 +2,110 @@
 
 from __future__ import annotations
 
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
+import logging
+from typing import Final
+
+from homeassistant.const import (
+    CONF_EMAIL,
+    CONF_PASSWORD,
+    Platform,
+    UnitOfLength,
+    UnitOfTemperature,
+    UnitOfVolume,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util.unit_system import METRIC_SYSTEM
 
 from .api import MopekaApiClient
-from .const import CONF_BACKEND, DOMAIN
+from .const import CONF_BACKEND, CONF_SENSORS, DOMAIN
 from .coordinator import MopekaConfigEntry, MopekaCoordinator
 
+_LOGGER = logging.getLogger(__name__)
+
 PLATFORMS: list[Platform] = [Platform.SENSOR]
+
+# Measurement keys of releases before 2.0, as used in entity unique IDs, mapped
+# to the new key and the display unit to keep. None means the entity is removed.
+_LEGACY_ENTITY_KEYS: Final[dict[str, tuple[str, str | None] | None]] = {
+    "level_cm": ("level", UnitOfLength.CENTIMETERS),
+    "level_inches": ("level", UnitOfLength.INCHES),
+    "temperature_c": ("temperature", UnitOfTemperature.CELSIUS),
+    "temperature_f": ("temperature", UnitOfTemperature.FAHRENHEIT),
+    "volume_liters": ("volume", UnitOfVolume.LITERS),
+    "volume_gallons_us": ("volume", UnitOfVolume.GALLONS),
+    "updated_human_readable": ("last_reading", None),
+    "battery_voltage": ("battery_voltage", None),
+    "fill_percent": ("fill_percent", None),
+    "signal_quality": ("signal_quality", None),
+    "propaneButaneRatio": None,
+    "tank_height": None,
+    "tank_type": None,
+    "vertical": None,
+    "volume_original_unit": None,
+}
+_METRIC_KEYS: Final = frozenset({"level_cm", "temperature_c", "volume_liters"})
+_US_KEYS: Final = frozenset({"level_inches", "temperature_f", "volume_gallons_us"})
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: MopekaConfigEntry) -> bool:
+    """Migrate entries from releases before 2.0."""
+    if entry.version > 1:
+        return False  # Created by a newer release.
+    if entry.minor_version < 2:
+        _migrate_legacy_entities(hass, entry)
+        options = {k: v for k, v in entry.options.items() if k != CONF_SENSORS}
+        hass.config_entries.async_update_entry(entry, options=options, minor_version=2)
+        _LOGGER.debug("Migrated entry %s to version 1.2", entry.entry_id)
+    return True
+
+
+def _split_legacy_unique_id(unique_id: str) -> tuple[str, str] | None:
+    """Return (address, legacy key) for a pre-2.0 unique ID, or None."""
+    for key in sorted(_LEGACY_ENTITY_KEYS, key=len, reverse=True):
+        if unique_id.endswith(f"_{key}"):
+            return unique_id[: -len(key) - 1], key
+    return None
+
+
+def _migrate_legacy_entities(hass: HomeAssistant, entry: MopekaConfigEntry) -> None:
+    """Move pre-2.0 entities to the new keys, keeping entity IDs and history.
+
+    Where a measurement existed in two units, the entity in the unit system
+    Home Assistant uses is kept and the other removed. Kept entities go on
+    showing the unit they had.
+    """
+    registry = er.async_get(hass)
+    preferred = _METRIC_KEYS if hass.config.units is METRIC_SYSTEM else _US_KEYS
+    taken = {
+        e.unique_id for e in er.async_entries_for_config_entry(registry, entry.entry_id)
+    }
+    legacy = [
+        (entity, parts)
+        for entity in er.async_entries_for_config_entry(registry, entry.entry_id)
+        if (parts := _split_legacy_unique_id(entity.unique_id)) is not None
+    ]
+    legacy.sort(key=lambda item: item[1][1] not in preferred)
+    for entity, (address, old_key) in legacy:
+        target = _LEGACY_ENTITY_KEYS[old_key]
+        if target is None:
+            registry.async_remove(entity.entity_id)
+            continue
+        new_key, unit = target
+        new_unique_id = f"{address}_{new_key}"
+        if new_unique_id == entity.unique_id:
+            continue
+        if new_unique_id in taken:
+            registry.async_remove(entity.entity_id)
+            continue
+        registry.async_update_entity(entity.entity_id, new_unique_id=new_unique_id)
+        taken.add(new_unique_id)
+        if unit is not None:
+            registry.async_update_entity_options(
+                entity.entity_id, "sensor", {"unit_of_measurement": unit}
+            )
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: MopekaConfigEntry) -> bool:

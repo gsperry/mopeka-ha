@@ -15,11 +15,7 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import (
 )
 
 from custom_components.mopeka_ha.api import MopekaApiClient
-from custom_components.mopeka_ha.const import (
-    CONF_SENSORS,
-    CONF_UPDATE_INTERVAL,
-    DOMAIN,
-)
+from custom_components.mopeka_ha.const import CONF_UPDATE_INTERVAL, DOMAIN
 
 from .fake_cloud import FakeCloud, install_fake_cloud, make_device, make_reading
 
@@ -27,7 +23,6 @@ EMAIL = "user@example.com"
 PASSWORD = "correct-horse-battery"
 ADDRESS_A = "AA:BB:CC:00:00:01"
 ADDRESS_B = "AA:BB:CC:00:00:02"
-SELECTED_SENSORS = ["battery_voltage", "fill_percent", "temperature_c"]
 
 
 @pytest.fixture(autouse=True)
@@ -62,7 +57,7 @@ def api_client(hass: HomeAssistant, fake_cloud: FakeCloud) -> MopekaApiClient:
 @pytest.fixture
 def entry_options() -> dict[str, Any]:
     """Return the options for the mock config entry."""
-    return {CONF_SENSORS: SELECTED_SENSORS, CONF_UPDATE_INTERVAL: 5}
+    return {CONF_UPDATE_INTERVAL: 5}
 
 
 @pytest.fixture
@@ -74,6 +69,8 @@ def config_entry(hass: HomeAssistant, entry_options: dict[str, Any]) -> MockConf
         unique_id=EMAIL,
         data={CONF_EMAIL: EMAIL, CONF_PASSWORD: PASSWORD},
         options=entry_options,
+        version=1,
+        minor_version=2,
     )
     entry.add_to_hass(hass)
     return entry

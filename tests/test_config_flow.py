@@ -20,7 +20,6 @@ from custom_components.mopeka_ha.const import (
     BACKEND_LEGACY,
     CONF_BACKEND,
     CONF_EXCLUDED_DEVICES,
-    CONF_SENSORS,
     CONF_UPDATE_INTERVAL,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
@@ -41,7 +40,7 @@ def _choices(result: dict[str, Any], field: str) -> dict[str, str]:
 
 
 async def test_user_flow(hass: HomeAssistant, fake_cloud: FakeCloud) -> None:
-    """Signing in, choosing measurements, and creating the entry."""
+    """Signing in creates the entry and its entities."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
@@ -51,28 +50,17 @@ async def test_user_flow(hass: HomeAssistant, fake_cloud: FakeCloud) -> None:
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_EMAIL: f"  {EMAIL} ", CONF_PASSWORD: PASSWORD}
     )
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "sensors"
-    choices = _choices(result, CONF_SENSORS)
-    assert choices["fill_percent"] == "fill_percent (50.0)"
-    assert choices["battery_voltage"] == "battery_voltage (2.94)"
-
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_SENSORS: ["fill_percent", "battery_voltage"]}
-    )
     await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == EMAIL
     assert result["data"] == {**USER_INPUT, CONF_BACKEND: BACKEND_LEGACY}
-    assert result["options"] == {
-        CONF_SENSORS: ["fill_percent", "battery_voltage"],
-        CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
-    }
+    assert result["options"] == {CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL}
     entry = result["result"]
     assert entry.unique_id == EMAIL
     assert entry.state is ConfigEntryState.LOADED
-    assert hass.states.get("sensor.tank_a_fill_percent") is not None
+    assert entry.minor_version == 2
+    assert hass.states.get("sensor.tank_a_fill_level") is not None
 
 
 def _wrong_password(cloud: FakeCloud) -> None:
@@ -135,7 +123,8 @@ async def test_user_flow_errors(
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], USER_INPUT
     )
-    assert result["step_id"] == "sensors"
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
 async def test_user_flow_unexpected_exception(
@@ -169,23 +158,6 @@ async def test_user_flow_already_configured(
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
     assert fake_cloud.cognito.requests == []
-
-
-async def test_user_flow_requires_a_measurement(
-    hass: HomeAssistant, fake_cloud: FakeCloud
-) -> None:
-    """Submitting no measurements shows an error."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
-    )
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], USER_INPUT
-    )
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_SENSORS: []}
-    )
-    assert result["step_id"] == "sensors"
-    assert result["errors"] == {"base": "no_sensors_selected"}
 
 
 async def test_reauth(
@@ -254,7 +226,7 @@ async def test_reconfigure_other_account(
 async def test_options_flow(
     hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
 ) -> None:
-    """Options change the interval, excluded tanks, and measurements."""
+    """Options change the interval and the excluded tanks."""
     await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
     device_registry = dr.async_get(hass)
@@ -271,11 +243,7 @@ async def test_options_flow(
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {
-            CONF_UPDATE_INTERVAL: 15.0,
-            CONF_EXCLUDED_DEVICES: [ADDRESS_B],
-            CONF_SENSORS: ["fill_percent"],
-        },
+        {CONF_UPDATE_INTERVAL: 15.0, CONF_EXCLUDED_DEVICES: [ADDRESS_B]},
     )
     await hass.async_block_till_done()
 
@@ -283,36 +251,22 @@ async def test_options_flow(
     assert config_entry.options == {
         CONF_UPDATE_INTERVAL: 15,
         CONF_EXCLUDED_DEVICES: [ADDRESS_B],
-        CONF_SENSORS: ["fill_percent"],
     }
-    # The entry reloads: Tank B is gone and only the chosen measurement remains.
+    # The entry reloads without Tank B.
     assert (
         device_registry.async_get_device_by_identifier(
             (DOMAIN, ADDRESS_B), config_entry.entry_id
         )
         is None
     )
-    assert hass.states.get("sensor.tank_a_fill_percent") is not None
-    assert hass.states.get("sensor.tank_a_battery_voltage") is None
+    assert hass.states.get("sensor.tank_a_fill_level") is not None
+    assert hass.states.get("sensor.tank_b_fill_level") is None
     assert config_entry.runtime_data.update_interval.total_seconds() == 15 * 60
-
-
-async def test_options_flow_requires_a_measurement(
-    hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry
-) -> None:
-    """Options cannot remove every measurement."""
-    await hass.config_entries.async_setup(config_entry.entry_id)
-    await hass.async_block_till_done()
-    result = await hass.config_entries.options.async_init(config_entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_UPDATE_INTERVAL: 5, CONF_SENSORS: []}
-    )
-    assert result["errors"] == {"base": "no_sensors_selected"}
 
 
 @pytest.mark.parametrize(
     "entry_options",
-    [{CONF_SENSORS: ["fill_percent"], CONF_EXCLUDED_DEVICES: ["GONE:00"]}],
+    [{CONF_UPDATE_INTERVAL: 5, CONF_EXCLUDED_DEVICES: ["GONE:00"]}],
 )
 async def test_options_flow_entry_not_loaded(
     hass: HomeAssistant, fake_cloud: FakeCloud, config_entry: MockConfigEntry

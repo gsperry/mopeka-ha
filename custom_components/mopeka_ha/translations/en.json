@@ -3,22 +3,15 @@
     "step": {
       "user": {
         "title": "Sign in to Mopeka",
-        "description": "Enter the email address and password you use for the Tank Check app.",
+        "description": "Enter the email address and password you use for the Mopeka Co-Pilot or Tank Check app.",
         "data": {
           "email": "Email",
           "password": "Password"
         }
       },
-      "sensors": {
-        "title": "Choose measurements",
-        "description": "Choose which measurements to create as entities for each tank. Current values are shown in parentheses.",
-        "data": {
-          "sensors": "Measurements"
-        }
-      },
       "reauth_confirm": {
         "title": "Sign in to Mopeka again",
-        "description": "Mopeka no longer accepts the saved password for {email}. Enter the password you use for the Tank Check app.",
+        "description": "Mopeka no longer accepts the saved password for {email}. Enter the password you use for the Mopeka app.",
         "data": {
           "password": "Password"
         }
@@ -34,9 +27,8 @@
     },
     "error": {
       "cannot_connect": "Cannot reach Mopeka Cloud. Check that Home Assistant has internet access and try again. The Home Assistant log has details.",
-      "invalid_auth": "Mopeka did not accept this email and password. Check that they work in the Tank Check app. The Home Assistant log has details.",
-      "unknown": "Unexpected error. The Home Assistant log has details.",
-      "no_sensors_selected": "Select at least one measurement."
+      "invalid_auth": "Mopeka did not accept this email and password. Check that they work in the Mopeka app. The Home Assistant log has details.",
+      "unknown": "Unexpected error. The Home Assistant log has details."
     },
     "abort": {
       "already_configured": "This Mopeka account is already configured.",
@@ -51,18 +43,35 @@
         "title": "Mopeka options",
         "data": {
           "update_interval": "Update interval",
-          "excluded_devices": "Tanks to leave out",
-          "sensors": "Measurements"
+          "excluded_devices": "Tanks to leave out"
         },
         "data_description": {
           "update_interval": "How often to check Mopeka Cloud for new readings, in minutes.",
-          "excluded_devices": "Tanks selected here are not added to Home Assistant. Use this for tanks that the built-in Mopeka Bluetooth integration already provides.",
-          "sensors": "Measurements to create as entities for each tank."
+          "excluded_devices": "Tanks selected here are not added to Home Assistant. Use this for tanks that the built-in Mopeka Bluetooth integration already provides."
         }
       }
-    },
-    "error": {
-      "no_sensors_selected": "Select at least one measurement."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "level": {
+        "name": "Level"
+      },
+      "fill_percent": {
+        "name": "Fill level"
+      },
+      "volume": {
+        "name": "Volume"
+      },
+      "battery_voltage": {
+        "name": "Battery voltage"
+      },
+      "last_reading": {
+        "name": "Last reading"
+      },
+      "signal_quality": {
+        "name": "Reading quality"
+      }
     }
   }
 }

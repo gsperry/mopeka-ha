@@ -10,6 +10,8 @@ forked from.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-03
+
 Version 2.0.0, the first release of the fork.
 
 ### Added

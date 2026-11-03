@@ -6,8 +6,10 @@
 """Check how Mopeka's current cloud platform serves data to your account.
 
 One-off research tool. Signs in to Mopeka's current Cognito user pool as the
-Co-Pilot app does (same app client ID), then calls the read-only device routes
-on dev.mopeka.cloud and prints the shape of each response.
+Co-Pilot app does (same app client ID), then calls the app's retail sync route,
+PUT /api/devices/retail, and prints the shape of each response. The request
+body is always {"devices": [], "deleted": []}, exactly as the app sends when it
+has no local changes, so nothing on the account is modified.
 
 Output has personal data removed: strings become "<str len N>" except a short
 allowlist of harmless values; MAC addresses, emails, names, coordinates, phone
@@ -32,6 +34,7 @@ import json
 import os
 import re
 import sys
+import time
 import types
 from pathlib import Path
 from typing import Any
@@ -49,14 +52,15 @@ api = importlib.import_module("mopeka_cloud.api")
 api.COGNITO_USER_POOL_ID = "us-east-1_CdV73bmzB"
 api.COGNITO_CLIENT_ID = "5dbn0o9pcqli659c1t3ptjpqmt"
 PORTAL = "https://dev.mopeka.cloud"
-ACCOUNT_ROUTES = ("/api/devices", "/api/devices/list", "/api/devices/names")
-DEVICE_ROUTES = (
-    "/api/devices/{org}/{device}",
-    "/api/devices/{org}/{device}/shadow",
-    "/api/devices/getShadowFromMac?mac={mac}",
-    "/api/devices/{org}/{device}/samples?limit=2&attributesToGet=t,r,q,v,c,s&qualityType=1",
-)
-MAX_DEVICES = 2
+# Headers the Co-Pilot app sends, minus its crash-reporting headers.
+APP_HEADERS = {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "referrer": "copilot-2.9.14-1.0.0",
+    "User-Agent": "CoPilot/1.0.0 CFNetwork/3896.200.61 Darwin/27.2.0",
+}
+# Never send anything but empty lists: entries here would change the account.
+EMPTY_SYNC = {"devices": [], "deleted": []}
 
 _KEEP_STRING_KEYS = re.compile(
     r"(unit|units|abbreviation|style|model|modelNumber|type|tankType|kind|status|"
@@ -118,22 +122,21 @@ async def get(
             return resp.status, f"<non-JSON, {len(text)} characters>"
 
 
-def device_list(payload: Any) -> list[dict[str, Any]]:
-    """Return device objects from a device-route response."""
-    if isinstance(payload, list):
-        return [d for d in payload if isinstance(d, dict)]
-    if isinstance(payload, dict):
-        for key in ("devices", "items", "data", "results", "rows"):
-            if isinstance(payload.get(key), list):
-                return [d for d in payload[key] if isinstance(d, dict)]
-    return []
-
-
-def first(obj: dict[str, Any], *names: str) -> Any:
-    for name in names:
-        if obj.get(name) not in (None, ""):
-            return obj[name]
-    return None
+async def sync(
+    session: aiohttp.ClientSession, token: str, since_ms: int
+) -> tuple[int, Any]:
+    """Call the retail sync route for changes since since_ms."""
+    async with session.put(
+        f"{PORTAL}/api/devices/retail",
+        params={"lastUpdatedAt": str(since_ms)},
+        headers={**APP_HEADERS, "token": token},
+        json=EMPTY_SYNC,
+    ) as resp:
+        text = await resp.text()
+        try:
+            return resp.status, json.loads(text)
+        except ValueError:
+            return resp.status, f"<non-JSON, {len(text)} characters>"
 
 
 async def main() -> int:
@@ -158,48 +161,22 @@ async def main() -> int:
                 f"Sign-in with the Co-Pilot client FAILED: {type(err).__name__}: {err}"
             )
             return 1
-        tokens = client._tokens
-        print("Signed in with the Co-Pilot app client.")
-        print(
-            "Access token client_id matches:",
-            claims(tokens.access_token).get("client_id") == api.COGNITO_CLIENT_ID,
-            "\n",
-        )
+        token = client._tokens.access_token
+        print("Signed in with the Co-Pilot app client.\n")
 
-        headers = {"token": tokens.access_token, "Accept": "application/json"}
-        devices: list[dict[str, Any]] = []
-        for path in ACCOUNT_ROUTES:
-            status, body = await get(session, PORTAL + path, headers)
-            show(f"GET {path}", status, body)
-            devices = devices or device_list(body)
-
-        if not devices:
-            print("\nNo device list. Trying the ID token in the same header once:")
-            status, body = await get(
-                session,
-                PORTAL + "/api/devices",
-                {"token": tokens.id_token, "Accept": "application/json"},
-            )
-            show("GET /api/devices (ID token)", status, body)
-            return 0
-
-        for index, device in enumerate(devices[:MAX_DEVICES], start=1):
-            ids = {
-                "org": first(device, "organizationId", "orgId"),
-                "device": first(device, "id", "deviceId"),
-                "mac": first(device, "fullMac", "mac"),
-            }
-            print(
-                f"\n--- device {index}: has {[k for k, v in ids.items() if v is not None]}"
-            )
-            for template in DEVICE_ROUTES:
-                needed = re.findall(r"{(\w+)}", template)
-                if any(ids.get(n) is None for n in needed):
-                    continue
-                status, body = await get(
-                    session, PORTAL + template.format(**ids), headers
-                )
-                show(f"GET {template}", status, body)
+        now_ms = int(time.time() * 1000)
+        for label, since in (
+            ("everything (lastUpdatedAt=0)", 0),
+            ("last 24 hours", now_ms - 24 * 3600 * 1000),
+        ):
+            status, body = await sync(session, token, since)
+            show(f"PUT /api/devices/retail, {label}", status, body)
+            if isinstance(body, dict):
+                for device in body.get("devices", [])[:2]:
+                    if isinstance(device, dict):
+                        samples = device.get("samples")
+                        count = len(samples) if isinstance(samples, list) else None
+                        print(f"  device keys: {sorted(device)}; samples: {count}")
     return 0
 
 

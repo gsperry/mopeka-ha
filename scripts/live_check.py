@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["aiohttp", "pycognito"]
+# ///
 """Check a Mopeka account against the live Mopeka Cloud API.
 
 Uses the integration's own API client, without Home Assistant. Credentials come
 from the MOPEKA_EMAIL and MOPEKA_PASSWORD environment variables, or from a
 .env file in the repository root (see .env.example). They are never printed.
 
-    uv run --with aiohttp --with pycognito scripts/live_check.py
-    uv run --with aiohttp --with pycognito scripts/live_check.py --debug
-    uv run --with aiohttp --with pycognito scripts/live_check.py --record tests/fixtures
+    uv run scripts/live_check.py
+    uv run scripts/live_check.py --debug
+    uv run scripts/live_check.py --record tests/fixtures
 
 The summary uses placeholder names, so it is safe to share. --debug adds the
 client's request log; tokens and email are redacted, but tank names and sensor

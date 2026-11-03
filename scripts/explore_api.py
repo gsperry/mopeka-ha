@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["aiohttp", "pycognito"]
+# ///
 """Print the shape of Mopeka's current cloud API responses for your account.
 
 One-off research tool. Signs in to Mopeka's current Cognito user pool with the
@@ -13,7 +17,7 @@ own web app, and prints each response with personal data removed:
 Credentials come from MOPEKA_EMAIL and MOPEKA_PASSWORD, or a .env file in the
 repository root. Review the output before sharing it.
 
-    uv run --with aiohttp --with pycognito scripts/explore_api.py
+    uv run scripts/explore_api.py
 """
 
 from __future__ import annotations

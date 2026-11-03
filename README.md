@@ -202,7 +202,7 @@ Python and [uv](https://docs.astral.sh/uv/). Copy `.env.example` to `.env`, ente
 credentials, then run:
 
 ```bash
-uv run --with aiohttp --with pycognito scripts/live_check.py
+uv run scripts/live_check.py
 ```
 
 ### Reporting a bug

@@ -64,8 +64,9 @@ _KEEP_STRING_KEYS = re.compile(
     re.IGNORECASE,
 )
 _SENSITIVE_KEYS = re.compile(
-    r"(lat|lng|lon|latitude|longitude|phone|zip|postal|postcode|address|street|"
-    r"city|email|owner|customer|contact|serial|esn|imei|iccid|token$|secret)",
+    r"(lat|lng|lon|latitude|longitude|coordinates|geo|location|point|phone|zip|"
+    r"postal|postcode|address|street|city|email|owner|customer|contact|serial|esn|"
+    r"imei|iccid|token$|secret|name$)",
     re.IGNORECASE,
 )
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}[:-]?){5,7}[0-9A-Fa-f]{2}$")
@@ -75,13 +76,14 @@ _NUMBER_RE = re.compile(r"^-?\d+(\.\d+)?([eE][-+]?\d+)?$")
 
 def shape(value: Any, key: str = "") -> Any:
     """Return value with personal data removed but structure and numbers kept."""
+    # Check the key first, so sensitive objects and lists are removed whole.
+    if key and _SENSITIVE_KEYS.search(key) and not isinstance(value, bool | None):
+        return f"<{type(value).__name__} removed>"
     if isinstance(value, dict):
         return {k: shape(v, k) for k, v in value.items()}
     if isinstance(value, list):
         items = [shape(v, key) for v in value[:3]]
         return items + ([f"... {len(value) - 3} more"] if len(value) > 3 else [])
-    if key and _SENSITIVE_KEYS.search(key) and not isinstance(value, bool):
-        return f"<{type(value).__name__} removed>"
     if isinstance(value, str):
         if _MAC_RE.match(value) or _EMAIL_RE.search(value):
             return "<removed>"

@@ -7,6 +7,7 @@ import json
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.json import JSONEncoder
 from pytest_homeassistant_custom_component.common import MockConfigEntry
+from syrupy.assertion import SnapshotAssertion
 
 from custom_components.mopeka_ha.const import CONF_EXCLUDED_DEVICES
 from custom_components.mopeka_ha.diagnostics import (
@@ -46,3 +47,15 @@ async def test_diagnostics(
     assert first["reading"]["timestamp"] == "2025-11-01T12:26:40+00:00"
     assert second["excluded"] is True
     assert second["reading"] is None
+
+
+async def test_diagnostics_snapshot(
+    hass: HomeAssistant,
+    fake_cloud: FakeCloud,
+    config_entry: MockConfigEntry,
+    snapshot: SnapshotAssertion,
+) -> None:
+    """The full diagnostics output matches the reviewed snapshot."""
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert await async_get_config_entry_diagnostics(hass, config_entry) == snapshot

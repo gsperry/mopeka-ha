@@ -1,0 +1,34 @@
+{
+  "00:00:00:00:00:0A": {
+    "timeSeries": {
+      "Count": 1,
+      "Items": [
+        {
+          "Value": {"N": "0.167"},
+          "Timestamp": {"N": "1762000000000"},
+          "Temp": {"N": "21"},
+          "BatteryLevel": {"N": "2.94"},
+          "Quality": {"N": "3"},
+          "Source": {"S": "gateway-1"},
+          "ttl": {"N": "1769776000"}
+        }
+      ]
+    }
+  },
+  "00:00:00:00:00:0B": {
+    "timeSeries": {
+      "Count": 1,
+      "Items": [
+        {
+          "Value": {"N": "0.467"},
+          "Timestamp": {"N": "1762000000000"},
+          "Temp": {"N": "8"},
+          "BatteryLevel": {"N": "2.71"},
+          "Quality": {"N": "2"},
+          "Source": {"S": "gateway-1"},
+          "ttl": {"N": "1769776000"}
+        }
+      ]
+    }
+  }
+}

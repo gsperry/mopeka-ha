@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Generator
+from pathlib import Path
 from typing import Any
+from unittest.mock import PropertyMock, patch
 
 import pytest
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.syrupy import (
+    HomeAssistantSnapshotExtension,
+)
 from pytest_homeassistant_custom_component.test_util.aiohttp import (
     AiohttpClientMocker,
 )
+from syrupy.assertion import SnapshotAssertion
 
 from custom_components.mopeka_ha.api import MopekaApiClient
 from custom_components.mopeka_ha.const import CONF_UPDATE_INTERVAL, DOMAIN
@@ -74,3 +81,25 @@ def config_entry(hass: HomeAssistant, entry_options: dict[str, Any]) -> MockConf
     )
     entry.add_to_hass(hass)
     return entry
+
+
+def load_json_fixture(name: str) -> Any:
+    """Load a JSON fixture from tests/fixtures."""
+    return json.loads((Path(__file__).parent / "fixtures" / name).read_text("utf-8"))
+
+
+@pytest.fixture
+def entity_registry_enabled_by_default() -> Generator[None]:
+    """Create entities that are disabled by default as enabled."""
+    with patch(
+        "homeassistant.helpers.entity.Entity.entity_registry_enabled_default",
+        return_value=True,
+        new_callable=PropertyMock,
+    ):
+        yield
+
+
+@pytest.fixture
+def snapshot(snapshot: SnapshotAssertion) -> SnapshotAssertion:
+    """Return a snapshot that ignores IDs and timestamps, as in Home Assistant."""
+    return snapshot.use_extension(HomeAssistantSnapshotExtension)

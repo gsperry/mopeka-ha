@@ -10,6 +10,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util.unit_system import METRIC_SYSTEM, US_CUSTOMARY_SYSTEM
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.mopeka_ha import async_migrate_entry
 from custom_components.mopeka_ha.const import (
     CONF_SENSORS,
     CONF_UPDATE_INTERVAL,
@@ -142,3 +143,14 @@ async def test_entry_from_newer_release(
     await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.MIGRATION_ERROR
+
+
+async def test_migrate_entry_refuses_newer_version(hass: HomeAssistant) -> None:
+    """The migration itself also refuses entries from a newer major version.
+
+    Home Assistant checks this before calling it, so this covers the guard
+    Home Assistant's developer documentation recommends keeping.
+    """
+    entry = MockConfigEntry(domain=DOMAIN, version=2)
+    entry.add_to_hass(hass)
+    assert await async_migrate_entry(hass, entry) is False

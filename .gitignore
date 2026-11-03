@@ -94,3 +94,5 @@ Pipfile.lock
 *.tmp
 *.bak
 *.backup
+# Scrubbed research captures
+copilot-capture.txt

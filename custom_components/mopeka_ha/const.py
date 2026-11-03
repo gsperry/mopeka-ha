@@ -7,6 +7,11 @@ from typing import Any, Final
 
 DOMAIN: Final = "mopeka_ha"
 
+# Config entry version. Minor version 2 replaced the per-measurement options of
+# releases before 2.0 with fixed entity descriptions.
+CONFIG_ENTRY_VERSION: Final = 1
+CONFIG_ENTRY_MINOR_VERSION: Final = 2
+
 # Config entry data. CONF_BACKEND records which Mopeka platform holds the
 # account, so later sign-ins go straight to it.
 CONF_BACKEND: Final = "backend"

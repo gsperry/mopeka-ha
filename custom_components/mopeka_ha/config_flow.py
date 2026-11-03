@@ -40,6 +40,8 @@ from .const import (
     CONF_BACKEND,
     CONF_EXCLUDED_DEVICES,
     CONF_UPDATE_INTERVAL,
+    CONFIG_ENTRY_MINOR_VERSION,
+    CONFIG_ENTRY_VERSION,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
     MAX_UPDATE_INTERVAL,
@@ -79,8 +81,8 @@ async def _validate(
     except MopekaConnectionError as err:
         _LOGGER.warning("Cannot connect to Mopeka Cloud: %s", err)
         return None, {"base": "cannot_connect"}
-    except MopekaApiError as err:
-        _LOGGER.error("Unexpected response from Mopeka Cloud: %s", err)
+    except MopekaApiError:
+        _LOGGER.exception("Unexpected response from Mopeka Cloud")
         return None, {"base": "unknown"}
     except Exception:
         _LOGGER.exception("Unexpected error while checking the Mopeka account")
@@ -97,8 +99,8 @@ async def _validate(
 class MopekaConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Mopeka HA."""
 
-    VERSION = 1
-    MINOR_VERSION = 2
+    VERSION = CONFIG_ENTRY_VERSION
+    MINOR_VERSION = CONFIG_ENTRY_MINOR_VERSION
 
     @staticmethod
     @callback

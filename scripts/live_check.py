@@ -80,8 +80,8 @@ def load_env() -> tuple[str, str]:
     """Return the email and password from the environment or .env."""
     env_file = ROOT / ".env"
     if env_file.exists():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
+        for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, _, value = line.partition("=")
                 os.environ.setdefault(key.strip(), value.strip().strip("\"'"))

@@ -1,19 +1,30 @@
-name: Validate with HACS
+name: Validate
 
 on:
   push:
+    branches: [main]
   pull_request:
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "17 6 * * *"
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
-  validate-hacs:
-    runs-on: "ubuntu-latest"
+  hassfest:
+    name: Hassfest
+    runs-on: ubuntu-latest
     steps:
-      - name: HACS validation
-        uses: "hacs/action@main"
+      - uses: actions/checkout@v7
+      # Home Assistant publishes this action only on its default branch.
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    steps:
+      # HACS publishes this action only on its default branch.
+      - uses: hacs/action@main
         with:
-          category: "integration"
+          category: integration

@@ -20,7 +20,13 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util.unit_system import METRIC_SYSTEM
 
 from .api import MopekaApiClient
-from .const import CONF_BACKEND, CONF_SENSORS, DOMAIN
+from .const import (
+    CONF_BACKEND,
+    CONF_SENSORS,
+    CONFIG_ENTRY_MINOR_VERSION,
+    CONFIG_ENTRY_VERSION,
+    DOMAIN,
+)
 from .coordinator import MopekaConfigEntry, MopekaCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,13 +58,15 @@ _US_KEYS: Final = frozenset({"level_inches", "temperature_f", "volume_gallons_us
 
 async def async_migrate_entry(hass: HomeAssistant, entry: MopekaConfigEntry) -> bool:
     """Migrate entries from releases before 2.0."""
-    if entry.version > 1:
+    if entry.version > CONFIG_ENTRY_VERSION:
         return False  # Created by a newer release.
-    if entry.minor_version < 2:
+    if entry.minor_version < CONFIG_ENTRY_MINOR_VERSION:
         _migrate_legacy_entities(hass, entry)
         options = {k: v for k, v in entry.options.items() if k != CONF_SENSORS}
-        hass.config_entries.async_update_entry(entry, options=options, minor_version=2)
-        _LOGGER.debug("Migrated entry %s to version 1.2", entry.entry_id)
+        hass.config_entries.async_update_entry(
+            entry, options=options, minor_version=CONFIG_ENTRY_MINOR_VERSION
+        )
+        _LOGGER.debug("Migrated entry %s to the current version", entry.entry_id)
     return True
 
 

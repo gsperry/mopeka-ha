@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, for example 2.0.0 or 2.1.0b1"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+
+jobs:
+  checks:
+    name: Checks
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Release ${{ inputs.version }}
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate version
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]; then
+            echo "::error::Version must look like 2.0.0 or 2.1.0b1, got '$VERSION'."
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::Tag v$VERSION already exists."
+            exit 1
+          fi
+          if ! grep -q '^## \[Unreleased\]' CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [Unreleased]' section."
+            exit 1
+          fi
+
+      - name: Set version and date the changelog
+        run: |
+          manifest=custom_components/mopeka_ha/manifest.json
+          jq --arg v "$VERSION" '.version = $v' "$manifest" > "$manifest.tmp"
+          mv "$manifest.tmp" "$manifest"
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
+          today=$(date -u +%Y-%m-%d)
+          sed -i "s/^## \[Unreleased\]$/## [Unreleased]\n\n## [$VERSION] - $today/" CHANGELOG.md
+
+      - name: Extract release notes
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::No release notes for $VERSION in CHANGELOG.md."
+            exit 1
+          fi
+
+      - name: Commit and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release v$VERSION"
+          git tag -a "v$VERSION" -m "v$VERSION"
+          git push origin HEAD "v$VERSION"
+
+      - name: Build the HACS zip
+        run: |
+          cd custom_components/mopeka_ha
+          zip -r "$GITHUB_WORKSPACE/mopeka_ha.zip" . -x '__pycache__/*'
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          if [[ "$VERSION" =~ (a|b|rc)[0-9]+$ ]]; then
+            prerelease=(--prerelease)
+          fi
+          gh release create "v$VERSION" mopeka_ha.zip \
+            --title "v$VERSION" --notes-file release-notes.md "${prerelease[@]}"

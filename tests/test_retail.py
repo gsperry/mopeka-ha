@@ -169,7 +169,8 @@ async def test_latest_sample_wins(hass: HomeAssistant, cloud: FakeCloud) -> None
     ]
     data = await _client(hass).get_account_data()
     reading = data.tanks[MAC_A].reading
-    assert reading is not None and reading.timestamp is not None
+    assert reading is not None
+    assert reading.timestamp is not None
     assert reading.timestamp.timestamp() == 1_793_600_000
 
 
@@ -328,7 +329,8 @@ async def test_sync_debug_log_is_redacted(
     assert "Retail sync PUT https://dev.mopeka.cloud/api/devices/retail" in caplog.text
     assert "HTTP 200" in caplog.text
     assert "Account is on the retail platform" in caplog.text
-    assert EMAIL not in caplog.text and PASSWORD not in caplog.text
+    assert EMAIL not in caplog.text
+    assert PASSWORD not in caplog.text
     for token in cloud.current.access_tokens | cloud.current.refresh_tokens:
         assert token not in caplog.text
 

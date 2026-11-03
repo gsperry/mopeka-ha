@@ -1,5 +1,8 @@
 # Mopeka HA
 
+[![CI](https://github.com/gsperry/mopeka-ha/actions/workflows/ci.yml/badge.svg)](https://github.com/gsperry/mopeka-ha/actions/workflows/ci.yml)
+[![Validate](https://github.com/gsperry/mopeka-ha/actions/workflows/validate.yml/badge.svg)](https://github.com/gsperry/mopeka-ha/actions/workflows/validate.yml)
+
 A Home Assistant custom integration that reads Mopeka tank sensors from Mopeka Cloud, the
 same service Mopeka's mobile apps use. It works with accounts from the **Mopeka Co-Pilot**
 app and from the older **Tank Check** app, and detects which one you have.
@@ -67,10 +70,10 @@ Mopeka sensor models that report to the same account may work, but they are unte
 
 ### Manual
 
-1. Download the latest release from the
+1. Download `mopeka_ha.zip` from the latest release on the
    [releases page](https://github.com/gsperry/mopeka-ha/releases).
-2. Copy `custom_components/mopeka_ha` into the `custom_components` folder of your Home
-   Assistant configuration directory.
+2. Extract it into a new folder, `custom_components/mopeka_ha`, in your Home Assistant
+   configuration directory.
 3. Restart Home Assistant.
 
 Home Assistant installs the integration's Python requirements automatically on first load.
@@ -255,7 +258,8 @@ devices or settings on your account, and sends no data anywhere else.
 ## Contributing
 
 Bug reports and pull requests are welcome. Please open an issue to discuss larger changes
-before starting work.
+before starting work. [CONTRIBUTING.md](CONTRIBUTING.md) explains the development setup,
+tests, and release process, and [CHANGELOG.md](CHANGELOG.md) lists changes by release.
 
 ## Credits and license
 

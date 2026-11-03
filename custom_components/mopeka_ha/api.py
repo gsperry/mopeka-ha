@@ -28,6 +28,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from http import HTTPStatus
 from typing import Any, Final, Literal
 
 import aiohttp
@@ -255,7 +256,7 @@ class MopekaApiClient:
         self._token_lock = asyncio.Lock()
         # The app's token type for the gateway's Auth header. The access token
         # is known to work; the ID token is tried if the gateway rejects it.
-        self._token_kind: TokenKind = "access"
+        self._token_kind: TokenKind = "access"  # noqa: S105 - a token type
         self._timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
 
     @property
@@ -277,9 +278,12 @@ class MopekaApiClient:
         """
         async with self._token_lock:
             tokens = self._tokens
-            if tokens is not None and not tokens.expired():
-                if rejected is None or tokens is not rejected:
-                    return tokens
+            if (
+                tokens is not None
+                and not tokens.expired()
+                and (rejected is None or tokens is not rejected)
+            ):
+                return tokens
             if tokens is not None and tokens.refresh_token:
                 try:
                     self._tokens = await self._refresh(
@@ -424,7 +428,7 @@ class MopekaApiClient:
             raise MopekaApiError("Cognito response is missing AccessToken or IdToken")
         try:
             expires_in = int(result.get("ExpiresIn", 3600))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             expires_in = 3600
         refresh_token = result.get("RefreshToken")
         return _Tokens(
@@ -477,7 +481,7 @@ class MopekaApiClient:
             _loggable_body(text),
         )
         payload = _parse_json(text)
-        if status == 200 and isinstance(payload, dict):
+        if status == HTTPStatus.OK and isinstance(payload, dict):
             return payload
 
         error_type = ""
@@ -489,7 +493,10 @@ class MopekaApiClient:
         detail = f"{error_type or f'HTTP {status}'}: {message}".rstrip(": ")
         if error_type in _COGNITO_AUTH_ERRORS:
             raise MopekaAuthError(f"Sign-in rejected: {detail}", code=error_type)
-        if error_type in _COGNITO_TRANSIENT_ERRORS or status >= 500:
+        if (
+            error_type in _COGNITO_TRANSIENT_ERRORS
+            or status >= HTTPStatus.INTERNAL_SERVER_ERROR
+        ):
             raise MopekaConnectionError(f"Amazon Cognito is unavailable: {detail}")
         raise MopekaApiError(f"Amazon Cognito {target} failed: {detail}")
 
@@ -500,6 +507,7 @@ class MopekaApiClient:
         label: str,
         method: str,
         url: URL,
+        *,
         params: dict[str, str],
         headers: dict[str, str],
         body: str | None = None,
@@ -537,7 +545,7 @@ class MopekaApiClient:
             _loggable_body(text),
         )
         payload = _parse_json(text)
-        if status == 200 and payload is None:
+        if status == HTTPStatus.OK and payload is None:
             raise MopekaApiError(f"Mopeka Cloud returned non-JSON data from {url}")
         return status, payload
 
@@ -548,32 +556,35 @@ class MopekaApiClient:
             "Retail sync",
             "PUT",
             URL(RETAIL_SYNC_URL),
-            {"lastUpdatedAt": "0"},
-            {
+            params={"lastUpdatedAt": "0"},
+            headers={
                 **RETAIL_HEADERS,
                 "Content-Type": "application/json",
                 "token": tokens.access_token,
             },
-            json.dumps(EMPTY_RETAIL_SYNC),
+            body=json.dumps(EMPTY_RETAIL_SYNC),
         )
 
     async def _retail_sync(self) -> Any:
         """Return the retail sync response, refreshing tokens once on HTTP 401."""
         tokens = await self._ensure_tokens()
         status, payload = await self._retail_request(tokens)
-        if status == 401:
+        if status == HTTPStatus.UNAUTHORIZED:
             _LOGGER.debug("Retail sync rejected the token; refreshing")
             tokens = await self._ensure_tokens(rejected=tokens)
             status, payload = await self._retail_request(tokens)
-            if status == 401:
+            if status == HTTPStatus.UNAUTHORIZED:
                 raise MopekaApiError("Mopeka Cloud rejected a newly issued token")
-        if status == 403:
+        if status == HTTPStatus.FORBIDDEN:
             raise MopekaApiError(
                 "Mopeka Cloud refused to share this account's devices (HTTP 403)"
             )
-        if status == 429 or status >= 500:
+        if (
+            status == HTTPStatus.TOO_MANY_REQUESTS
+            or status >= HTTPStatus.INTERNAL_SERVER_ERROR
+        ):
             raise MopekaConnectionError(f"Mopeka Cloud is unavailable (HTTP {status})")
-        if status != 200:
+        if status != HTTPStatus.OK:
             raise MopekaApiError(f"Mopeka Cloud returned HTTP {status} for the sync")
         return payload
 
@@ -598,7 +609,7 @@ class MopekaApiClient:
                 continue
             if device.address in excluded:
                 continue
-            latest = max(samples, key=lambda s: _sample_time(s))
+            latest = max(samples, key=_sample_time)
             tanks[device.address] = MopekaTank(
                 device=device, reading=MopekaReading.from_retail(latest)
             )
@@ -614,8 +625,8 @@ class MopekaApiClient:
             "Gateway",
             "GET",
             url,
-            params,
-            {**GATEWAY_HEADERS, "Auth": tokens.get(self._token_kind)},
+            params=params,
+            headers={**GATEWAY_HEADERS, "Auth": tokens.get(self._token_kind)},
         )
 
     async def _gateway_get(self, url: URL, params: dict[str, str]) -> Any:
@@ -623,12 +634,12 @@ class MopekaApiClient:
         tokens = await self._ensure_tokens()
         status, payload = await self._gateway_request(url, params, tokens)
 
-        if status in (401, 403):
+        if status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
             _LOGGER.debug("Gateway rejected the token (HTTP %s); refreshing", status)
             tokens = await self._ensure_tokens(rejected=tokens)
             status, payload = await self._gateway_request(url, params, tokens)
 
-        if status in (401, 403):
+        if status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
             # The token is fresh, so the credentials are fine; the gateway may
             # expect the other token type.
             previous = self._token_kind
@@ -639,16 +650,19 @@ class MopekaApiClient:
                 self._token_kind,
             )
             status, payload = await self._gateway_request(url, params, tokens)
-            if status in (401, 403):
+            if status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
                 self._token_kind = previous
                 raise MopekaApiError(
                     "Mopeka Cloud rejected newly issued access and ID tokens "
                     f"(HTTP {status})"
                 )
 
-        if status == 429 or status >= 500:
+        if (
+            status == HTTPStatus.TOO_MANY_REQUESTS
+            or status >= HTTPStatus.INTERNAL_SERVER_ERROR
+        ):
             raise MopekaConnectionError(f"Mopeka Cloud is unavailable (HTTP {status})")
-        if status != 200:
+        if status != HTTPStatus.OK:
             raise MopekaApiError(f"Mopeka Cloud returned HTTP {status} for {url}")
         return payload
 

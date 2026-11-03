@@ -1,94 +1,95 @@
+# Tooling configuration for the Mopeka HA custom integration. The integration
+# is installed by HACS, not pip; this file only configures development tools.
+
 [project]
 name = "mopeka-ha"
-version = "1.2.5"
-description = "Home Assistant custom integration for Mopeka ultrasonic propane tank sensors"
+version = "2.0.0b3"
+description = "Home Assistant custom integration for Mopeka tank sensors via Mopeka Cloud"
 readme = "README.md"
-requires-python = ">=3.13"
-license = {text = "MIT"}
-authors = [{name = "mopeka-ha contributors"}]
-keywords = ["home-assistant", "hacs", "integration", "mopeka", "propane", "tank", "sensor"]
-classifiers = [
-    "Development Status :: 5 - Production/Stable",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Home Automation",
-]
-dependencies = ["pycognito>=2024.5.1"]
-
-[project.optional-dependencies]
-dev = [
-    "ruff>=0.1.0",
-    "pylint>=3.0.0",
-    "pytest>=8.0.0",
-    "pytest-homeassistant-custom-component>=0.13.0",
-    "pytest-asyncio>=0.23.0",
-    "pytest-cov>=4.1.0",
-]
+requires-python = ">=3.14.2"
+license = "MIT"
+license-files = ["LICENSE"]
 
 [project.urls]
 Homepage = "https://github.com/gsperry/mopeka-ha"
-Documentation = "https://github.com/gsperry/mopeka-ha"
-Repository = "https://github.com/gsperry/mopeka-ha.git"
 Issues = "https://github.com/gsperry/mopeka-ha/issues"
-
-[build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+Changelog = "https://github.com/gsperry/mopeka-ha/blob/main/CHANGELOG.md"
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py314"
 line-length = 88
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "B", "C4", "UP"]
-ignore = ["E501", "B008", "C901"]
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-skip-magic-trailing-comma = false
-line-ending = "auto"
-
-[tool.pylint.MAIN]
-py-version = "3.13"
-ignore-paths = ["^tests/.*$"]
-ignored-modules = []
-
-[tool.pylint."MESSAGES CONTROL"]
-disable = [
-    "format",
-    "abstract-method",
-    "duplicate-code",
-    "too-many-ancestors",
-    "too-many-arguments",
-    "too-many-branches",
-    "too-many-instance-attributes",
-    "too-many-locals",
-    "too-many-public-methods",
-    "too-many-return-statements",
-    "too-many-statements",
-    "unused-argument",
-    "missing-docstring",
-    "import-outside-toplevel",
-    "attribute-defined-outside-init",
-    "broad-exception-caught"
+select = [
+    "A",     # builtins shadowing
+    "ASYNC", # async pitfalls
+    "B",     # bugbear
+    "BLE",   # blind except
+    "C4",    # comprehensions
+    "D",     # docstrings
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "FLY",   # f-strings
+    "G",     # logging format
+    "I",     # import order
+    "LOG",   # logging
+    "PERF",  # performance
+    "PIE",   # misc lints
+    "PL",    # pylint
+    "PT",    # pytest style
+    "PTH",   # pathlib
+    "RET",   # returns
+    "RSE",   # raise
+    "RUF",   # ruff-specific
+    "S",     # bandit security
+    "SIM",   # simplify
+    "SLOT",  # __slots__
+    "T10",   # debugger
+    "T20",   # print
+    "TC",    # type-checking imports
+    "TID",   # tidy imports
+    "TRY",   # exception handling
+    "UP",    # pyupgrade
+    "W",     # pycodestyle warnings
+]
+ignore = [
+    "D202",    # blank line after docstring; conflicts with the formatter
+    "E501",    # line length; the formatter handles it
+    "PLR0911", # too many returns
+    "PLR0913", # too many arguments
+    "TC001",   # Home Assistant evaluates some annotations at runtime
+    "TC002",
+    "TC003",
+    "TRY003",  # long exception messages are intended: they reach the log
 ]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-norecursedirs = [".git"]
-asyncio_mode = "auto"
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
-[tool.coverage.run]
-source = ["custom_components.mopeka_ha"]
-omit = ["tests/*"]
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "D",       # test names describe the tests
+    "PLR2004", # expected values are literals
+    "S101",    # assert
+    "S105",    # fake passwords
+    "S106",
+    "SLF001",  # tests inspect private state
+    "PLR0917", # parametrized tests take many arguments
+]
+"scripts/**" = [
+    "ASYNC240", # command-line tools; blocking file writes are fine
+    "D1",       # helper docstrings are optional in research tools
+    "S",       # research tools, not shipped
+    "SLF001",
+    "T201",    # print is the output
+    "PLR2004",
+]
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 strict = true
 files = ["custom_components/mopeka_ha"]
 
@@ -96,6 +97,17 @@ files = ["custom_components/mopeka_ha"]
 # pycognito ships no type information.
 module = ["pycognito.*"]
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = ["--strict-markers"]
+filterwarnings = ["error::DeprecationWarning:custom_components.*"]
+
+[tool.coverage.run]
+source = ["custom_components.mopeka_ha"]
+branch = true
 
 [tool.coverage.report]
 fail_under = 90

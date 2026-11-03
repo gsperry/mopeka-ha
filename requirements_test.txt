@@ -1,1 +1,7 @@
-pylint>=3.0.0
+# Test, lint, and type-check dependencies, pinned for reproducible CI.
+# pytest-homeassistant-custom-component pins Home Assistant (2026.10.4), pytest,
+# pytest-cov, and syrupy, so the whole test stack follows from this one line.
+pytest-homeassistant-custom-component==0.13.375
+mypy==2.4.1
+ruff==0.17.3
+pre-commit==4.7.0

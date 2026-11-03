@@ -31,7 +31,7 @@ def update_interval_minutes(options: Mapping[str, Any]) -> int:
     """Return the configured poll interval, clamped to the allowed range."""
     try:
         minutes = int(options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return DEFAULT_UPDATE_INTERVAL
     return max(MIN_UPDATE_INTERVAL, min(MAX_UPDATE_INTERVAL, minutes))
 

@@ -534,7 +534,9 @@ async def test_debug_log_is_redacted(
     log = caplog.text
     assert "Cognito InitiateAuth request" in log
     assert "Cognito RespondToAuthChallenge response: HTTP 200" in log
-    assert "Gateway GET" in log and "HTTP 401" in log and "HTTP 200" in log
+    assert "Gateway GET" in log
+    assert "HTTP 401" in log
+    assert "HTTP 200" in log
     assert "trying the id token" in log
     assert REDACTED in log
 

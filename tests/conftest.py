@@ -33,11 +33,9 @@ ADDRESS_B = "AA:BB:CC:00:00:02"
 
 
 @pytest.fixture(autouse=True)
-def auto_enable_custom_integrations(
-    enable_custom_integrations: None,
-) -> Generator[None]:
+def auto_enable_custom_integrations(enable_custom_integrations: None) -> None:
     """Enable loading the custom integration in every test."""
-    yield
+    return
 
 
 @pytest.fixture
